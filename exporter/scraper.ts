@@ -344,39 +344,35 @@ export class ReplitScraper {
   }
 
   private async extractChatData(page: Page): Promise<{ messages: ChatMessage[]; checkpoints: Checkpoint[] }> {
-    const data = await page.evaluate(() => {
-      const messages: any[] = [];
-      const checkpoints: any[] = [];
+    const data = await page.evaluate(function() {
+      var messages: any[] = [];
+      var checkpoints: any[] = [];
 
       // Helper to parse timestamps from various formats
-      const parseTimestamp = (el: Element): string | null => {
+      function parseTimestamp(el: Element): string | null {
         // Look for time elements
-        const timeEl = el.querySelector('time, [datetime], [data-timestamp]');
+        var timeEl = el.querySelector('time, [datetime], [data-timestamp]');
         if (timeEl) {
-          const dt = timeEl.getAttribute('datetime') || 
+          var dt = timeEl.getAttribute('datetime') || 
                     timeEl.getAttribute('data-timestamp') ||
                     timeEl.getAttribute('title');
           if (dt) return dt;
         }
         
         // Look for timestamp in text
-        const timestampPatterns = [
-          /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/,
-          /(\d{1,2}:\d{2}\s*(?:AM|PM)?)/i,
-          /(\d{1,2}\/\d{1,2}\/\d{2,4})/,
-        ];
-        
-        const text = el.textContent || '';
-        for (const pattern of timestampPatterns) {
-          const match = text.match(pattern);
-          if (match) return match[1];
-        }
+        var text = el.textContent || '';
+        var isoMatch = text.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/);
+        if (isoMatch) return isoMatch[1];
+        var timeMatch = text.match(/(\d{1,2}:\d{2}\s*(?:AM|PM)?)/i);
+        if (timeMatch) return timeMatch[1];
+        var dateMatch = text.match(/(\d{1,2}\/\d{1,2}\/\d{2,4})/);
+        if (dateMatch) return dateMatch[1];
         
         return null;
-      };
+      }
 
       // Message selectors in order of specificity
-      const messageSelectors = [
+      var messageSelectors = [
         '[data-testid="user-message"]',
         '[data-testid="agent-message"]',
         '[data-testid="assistant-message"]',
@@ -386,76 +382,77 @@ export class ReplitScraper {
         '[class*="AgentMessage"]',
         '[class*="AssistantMessage"]',
         '[class*="ChatMessage"]',
-        '[class*="chat-message"]',
+        '[class*="chat-message"]'
       ];
 
       // Checkpoint selectors
-      const checkpointSelectors = [
+      var checkpointSelectors = [
         '[data-testid="checkpoint"]',
         '[data-testid*="checkpoint"]',
         '[data-cy="checkpoint"]',
         '[class*="Checkpoint"]',
-        '[class*="checkpoint"]',
+        '[class*="checkpoint"]'
       ];
 
       // Collect all elements in DOM order
-      const allSelectors = [...messageSelectors, ...checkpointSelectors].join(', ');
-      const allElements = document.querySelectorAll(allSelectors);
+      var allSelectors = messageSelectors.concat(checkpointSelectors).join(', ');
+      var allElements = document.querySelectorAll(allSelectors);
       
-      const processedTexts = new Set<string>();
-      let index = 0;
+      var processedTexts: {[key: string]: boolean} = {};
+      var index = 0;
 
-      allElements.forEach((el) => {
-        const text = (el.textContent || '').trim();
+      for (var i = 0; i < allElements.length; i++) {
+        var el = allElements[i];
+        var text = (el.textContent || '').trim();
         
         // Skip empty or very short text
-        if (!text || text.length < 3) return;
+        if (!text || text.length < 3) continue;
         
         // Skip duplicates
-        const textKey = text.substring(0, 200);
-        if (processedTexts.has(textKey)) return;
-        processedTexts.add(textKey);
+        var textKey = text.substring(0, 200);
+        if (processedTexts[textKey]) continue;
+        processedTexts[textKey] = true;
         
-        const classList = (el.className || '').toLowerCase();
-        const testId = (el.getAttribute('data-testid') || '').toLowerCase();
-        const dataCy = (el.getAttribute('data-cy') || '').toLowerCase();
+        var classList = ((el as HTMLElement).className || '').toLowerCase();
+        var testId = (el.getAttribute('data-testid') || '').toLowerCase();
+        var dataCy = (el.getAttribute('data-cy') || '').toLowerCase();
         
-        const timestamp = parseTimestamp(el);
+        var timestamp = parseTimestamp(el);
 
         // Detect checkpoint
-        const isCheckpoint = 
-          classList.includes('checkpoint') ||
-          testId.includes('checkpoint') ||
-          dataCy.includes('checkpoint');
+        var isCheckpoint = 
+          classList.indexOf('checkpoint') >= 0 ||
+          testId.indexOf('checkpoint') >= 0 ||
+          dataCy.indexOf('checkpoint') >= 0;
 
         if (isCheckpoint) {
           // Extract cost from checkpoint
-          const costMatch = text.match(/\$[\d.]+/);
+          var costMatch = text.match(/\$[\d.]+/);
           checkpoints.push({
-            timestamp,
+            timestamp: timestamp,
             description: text.substring(0, 1000),
             cost: costMatch ? costMatch[0] : null,
             durationSeconds: null,
-            index: index++,
+            index: index++
           });
-          return;
+          continue;
         }
 
         // Detect user vs agent message
-        const isUser = 
-          classList.includes('user') ||
-          testId.includes('user') ||
-          dataCy.includes('user') ||
+        var isUser = 
+          classList.indexOf('user') >= 0 ||
+          testId.indexOf('user') >= 0 ||
+          dataCy.indexOf('user') >= 0 ||
           el.closest('[data-testid="user-message"]') !== null ||
           el.closest('[class*="UserMessage"]') !== null;
 
-        const isAgent = 
-          classList.includes('agent') ||
-          classList.includes('assistant') ||
-          testId.includes('agent') ||
-          testId.includes('assistant') ||
-          dataCy.includes('agent') ||
-          dataCy.includes('assistant') ||
+        var isAgent = 
+          classList.indexOf('agent') >= 0 ||
+          classList.indexOf('assistant') >= 0 ||
+          testId.indexOf('agent') >= 0 ||
+          testId.indexOf('assistant') >= 0 ||
+          dataCy.indexOf('agent') >= 0 ||
+          dataCy.indexOf('assistant') >= 0 ||
           el.closest('[data-testid="agent-message"]') !== null ||
           el.closest('[class*="AgentMessage"]') !== null ||
           el.closest('[class*="AssistantMessage"]') !== null;
@@ -464,30 +461,36 @@ export class ReplitScraper {
           messages.push({
             type: isUser ? 'user' : 'agent',
             content: text.substring(0, 10000),
-            timestamp,
-            index: index++,
-          });
-        }
-      });
-
-      // Also try to find checkpoints by looking for cost patterns in the page
-      const allText = document.body.innerText;
-      const costRegex = /checkpoint[^\$]*(\$[\d.]+)/gi;
-      let costMatch;
-      while ((costMatch = costRegex.exec(allText)) !== null) {
-        const alreadyHasCost = checkpoints.some(cp => cp.cost === costMatch[1]);
-        if (!alreadyHasCost) {
-          checkpoints.push({
-            timestamp: null,
-            description: costMatch[0].substring(0, 200),
-            cost: costMatch[1],
-            durationSeconds: null,
-            index: index++,
+            timestamp: timestamp,
+            index: index++
           });
         }
       }
 
-      return { messages, checkpoints };
+      // Also try to find checkpoints by looking for cost patterns in the page
+      var allText = document.body.innerText;
+      var costRegex = /checkpoint[^\$]*(\$[\d.]+)/gi;
+      var costMatch2;
+      while ((costMatch2 = costRegex.exec(allText)) !== null) {
+        var alreadyHasCost = false;
+        for (var j = 0; j < checkpoints.length; j++) {
+          if (checkpoints[j].cost === costMatch2[1]) {
+            alreadyHasCost = true;
+            break;
+          }
+        }
+        if (!alreadyHasCost) {
+          checkpoints.push({
+            timestamp: null,
+            description: costMatch2[0].substring(0, 200),
+            cost: costMatch2[1],
+            durationSeconds: null,
+            index: index++
+          });
+        }
+      }
+
+      return { messages: messages, checkpoints: checkpoints };
     });
 
     return data as { messages: ChatMessage[]; checkpoints: Checkpoint[] };

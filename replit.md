@@ -63,6 +63,7 @@ npx tsx exporter/index.ts --clear-session
 
 ## Recent Changes
 
+- 2026-02-04: Fixed page.evaluate error by using ES5 syntax in browser context (avoids tsx __name helper issue)
 - 2026-02-04: Added work-tracking.csv output for simplified time/cost tracking
 - 2026-02-04: Fixed login redirect detection - tool now waits for re-authentication when session expires
 - 2026-02-03: Initial implementation with Playwright scraper
