@@ -87,12 +87,12 @@ export class ReplitScraper {
         return false;
       }
       
-      const isLoggedIn = await page.evaluate(() => {
-        const hasAvatar = !!document.querySelector('[data-cy="user-menu"]') || 
+      const isLoggedIn = await page.evaluate(function() {
+        var hasAvatar = !!document.querySelector('[data-cy="user-menu"]') || 
                          !!document.querySelector('[data-testid="user-menu"]') ||
                          !!document.querySelector('button[aria-label*="user"]') ||
                          !!document.querySelector('[class*="Avatar"]');
-        const hasCreateButton = !!document.querySelector('button:has-text("Create Repl")') ||
+        var hasCreateButton = !!document.querySelector('button:has-text("Create Repl")') ||
                                !!document.querySelector('[data-cy="create-repl-button"]');
         return hasAvatar || hasCreateButton;
       });
@@ -276,36 +276,36 @@ export class ReplitScraper {
     
     for (let i = 0; i < maxIterations; i++) {
       // Count current message elements
-      const currentCount = await page.evaluate(() => {
-        const selectors = [
+      const currentCount = await page.evaluate(function() {
+        var selectors = [
           '[data-testid*="message"]',
           '[data-cy*="message"]',
           '[class*="ChatMessage"]',
           '[class*="chat-message"]',
           '[class*="UserMessage"]',
           '[class*="AgentMessage"]',
-          '[class*="AssistantMessage"]',
+          '[class*="AssistantMessage"]'
         ];
-        let count = 0;
-        for (const sel of selectors) {
-          count += document.querySelectorAll(sel).length;
+        var count = 0;
+        for (var i = 0; i < selectors.length; i++) {
+          count += document.querySelectorAll(selectors[i]).length;
         }
         return count;
       });
 
       // Scroll to top of chat container
-      await page.evaluate((selector) => {
+      await page.evaluate(function(selector) {
         if (selector) {
-          const container = document.querySelector(selector);
+          var container = document.querySelector(selector);
           if (container) {
             container.scrollTop = 0;
           }
         }
         // Also try common scroll patterns
-        const scrollAreas = document.querySelectorAll('[class*="ScrollArea"], [class*="scroll"], [role="log"]');
-        scrollAreas.forEach(el => {
-          (el as HTMLElement).scrollTop = 0;
-        });
+        var scrollAreas = document.querySelectorAll('[class*="ScrollArea"], [class*="scroll"], [role="log"]');
+        for (var j = 0; j < scrollAreas.length; j++) {
+          scrollAreas[j].scrollTop = 0;
+        }
       }, containerSelector);
 
       await page.waitForTimeout(800);
@@ -327,17 +327,17 @@ export class ReplitScraper {
     console.log('');
     
     // Scroll back to bottom to ensure proper DOM order
-    await page.evaluate((selector) => {
+    await page.evaluate(function(selector) {
       if (selector) {
-        const container = document.querySelector(selector);
+        var container = document.querySelector(selector);
         if (container) {
           container.scrollTop = container.scrollHeight;
         }
       }
-      const scrollAreas = document.querySelectorAll('[class*="ScrollArea"], [class*="scroll"], [role="log"]');
-      scrollAreas.forEach(el => {
-        (el as HTMLElement).scrollTop = (el as HTMLElement).scrollHeight;
-      });
+      var scrollAreas = document.querySelectorAll('[class*="ScrollArea"], [class*="scroll"], [role="log"]');
+      for (var j = 0; j < scrollAreas.length; j++) {
+        scrollAreas[j].scrollTop = scrollAreas[j].scrollHeight;
+      }
     }, containerSelector);
     
     await page.waitForTimeout(500);
@@ -345,11 +345,11 @@ export class ReplitScraper {
 
   private async extractChatData(page: Page): Promise<{ messages: ChatMessage[]; checkpoints: Checkpoint[] }> {
     const data = await page.evaluate(function() {
-      var messages: any[] = [];
-      var checkpoints: any[] = [];
+      var messages = [];
+      var checkpoints = [];
 
       // Helper to parse timestamps from various formats
-      function parseTimestamp(el: Element): string | null {
+      function parseTimestamp(el) {
         // Look for time elements
         var timeEl = el.querySelector('time, [datetime], [data-timestamp]');
         if (timeEl) {
@@ -398,7 +398,7 @@ export class ReplitScraper {
       var allSelectors = messageSelectors.concat(checkpointSelectors).join(', ');
       var allElements = document.querySelectorAll(allSelectors);
       
-      var processedTexts: {[key: string]: boolean} = {};
+      var processedTexts = {};
       var index = 0;
 
       for (var i = 0; i < allElements.length; i++) {
@@ -413,7 +413,7 @@ export class ReplitScraper {
         if (processedTexts[textKey]) continue;
         processedTexts[textKey] = true;
         
-        var classList = ((el as HTMLElement).className || '').toLowerCase();
+        var classList = (el.className || '').toLowerCase();
         var testId = (el.getAttribute('data-testid') || '').toLowerCase();
         var dataCy = (el.getAttribute('data-cy') || '').toLowerCase();
         
