@@ -63,6 +63,8 @@ npx tsx exporter/index.ts --clear-session
 
 ## Recent Changes
 
+- 2026-02-04: Made OAuth login more resilient - uses polling instead of waitForURL to handle redirect errors
+- 2026-02-04: Added fallback that continues if any cookies exist after OAuth (even if automatic detection fails)
 - 2026-02-04: Fixed __name error completely - converted all named function declarations to var assignments in page.evaluate
 - 2026-02-04: Added "Show previous messages" button click detection to load full chat history
 - 2026-02-04: Improved login flow to avoid multiple prompts - better OAuth/GitHub login handling
