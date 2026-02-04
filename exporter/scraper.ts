@@ -372,9 +372,18 @@ export class ReplitScraper {
   private async scrollToLoadAll(page: Page, containerSelector: string | null): Promise<void> {
     let previousCount = 0;
     let sameCountIterations = 0;
+    let loadMoreFailedClicks = 0; // Track clicks that don't add messages
     const maxIterations = 100;
+    const maxLoadMoreFailures = 3; // Stop after 3 clicks that don't load more
+    const startTime = Date.now();
+    const maxTime = 60000; // 60 second maximum for scroll/load phase
     
     for (let i = 0; i < maxIterations; i++) {
+      // Check time limit
+      if (Date.now() - startTime > maxTime) {
+        console.log(`\nReached time limit for loading history (60s)`);
+        break;
+      }
       // Count current message elements
       const currentCount = await page.evaluate(function() {
         var selectors = [
@@ -441,12 +450,23 @@ export class ReplitScraper {
           
           if (newCount > currentCount) {
             process.stdout.write(`\rLoaded ${newCount - currentCount} new messages...`);
+            loadMoreFailedClicks = 0; // Reset on success
             break;
           }
           loadWaitAttempts++;
         }
         
-        sameCountIterations = 0; // Reset counter since we clicked a button
+        // If clicking didn't load new messages, track the failure
+        if (newCount <= currentCount) {
+          loadMoreFailedClicks++;
+          process.stdout.write(`\rLoad more click ${loadMoreFailedClicks}/${maxLoadMoreFailures} didn't add messages...`);
+          if (loadMoreFailedClicks >= maxLoadMoreFailures) {
+            console.log(`\nReached beginning of chat (button visible but no new messages after ${maxLoadMoreFailures} attempts)`);
+            break;
+          }
+        }
+        
+        sameCountIterations = 0;
         previousCount = newCount;
         continue;
       }
