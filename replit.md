@@ -77,8 +77,10 @@ npx tsx exporter/index.ts --clear-session
 
 **Important: page.evaluate browser context code must use pure ES5 JavaScript**
 - Use `var` instead of `const/let`
-- Use `var funcName = function(args) {}` instead of `function funcName(args) {}`
+- Do NOT define nested functions even as `var funcName = function() {}` - tsx still adds __name helper
+- Inline all function logic directly instead of creating helper functions inside page.evaluate
 - Use `for` loops instead of `.forEach()` with arrow callbacks
 - Use `.indexOf() >= 0` instead of `.includes()`
 - Do NOT use TypeScript type annotations (`: any[]`, `as HTMLElement`, etc.)
+- Use bracket notation for dynamic property access: `btn['click']()` instead of `(btn as HTMLElement).click()`
 - This prevents tsx from injecting `__name` helper functions that don't exist in browser context

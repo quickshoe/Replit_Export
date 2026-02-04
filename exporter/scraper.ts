@@ -567,29 +567,6 @@ export class ReplitScraper {
       var messages = [];
       var checkpoints = [];
 
-      // Helper to parse timestamps from various formats
-      var parseTimestamp = function(el) {
-        // Look for time elements
-        var timeEl = el.querySelector('time, [datetime], [data-timestamp]');
-        if (timeEl) {
-          var dt = timeEl.getAttribute('datetime') || 
-                    timeEl.getAttribute('data-timestamp') ||
-                    timeEl.getAttribute('title');
-          if (dt) return dt;
-        }
-        
-        // Look for timestamp in text
-        var text = el.textContent || '';
-        var isoMatch = text.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/);
-        if (isoMatch) return isoMatch[1];
-        var timeMatch = text.match(/(\d{1,2}:\d{2}\s*(?:AM|PM)?)/i);
-        if (timeMatch) return timeMatch[1];
-        var dateMatch = text.match(/(\d{1,2}\/\d{1,2}\/\d{2,4})/);
-        if (dateMatch) return dateMatch[1];
-        
-        return null;
-      };
-
       // Message selectors in order of specificity
       var messageSelectors = [
         '[data-testid="user-message"]',
@@ -636,7 +613,28 @@ export class ReplitScraper {
         var testId = (el.getAttribute('data-testid') || '').toLowerCase();
         var dataCy = (el.getAttribute('data-cy') || '').toLowerCase();
         
-        var timestamp = parseTimestamp(el);
+        // Inline timestamp parsing (no nested function to avoid tsx __name helper)
+        var timestamp = null;
+        var timeEl = el.querySelector('time, [datetime], [data-timestamp]');
+        if (timeEl) {
+          var dt = timeEl.getAttribute('datetime') || 
+                    timeEl.getAttribute('data-timestamp') ||
+                    timeEl.getAttribute('title');
+          if (dt) timestamp = dt;
+        }
+        if (!timestamp) {
+          var elText = el.textContent || '';
+          var isoMatch = elText.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/);
+          if (isoMatch) timestamp = isoMatch[1];
+          else {
+            var timeMatch = elText.match(/(\d{1,2}:\d{2}\s*(?:AM|PM)?)/i);
+            if (timeMatch) timestamp = timeMatch[1];
+            else {
+              var dateMatch = elText.match(/(\d{1,2}\/\d{1,2}\/\d{2,4})/);
+              if (dateMatch) timestamp = dateMatch[1];
+            }
+          }
+        }
 
         // Detect checkpoint
         var isCheckpoint = 
