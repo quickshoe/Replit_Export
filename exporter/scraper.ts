@@ -472,14 +472,15 @@ export class ReplitScraper {
 
       // Also try to find checkpoints by looking for cost patterns in the page
       const allText = document.body.innerText;
-      const costMatches = allText.matchAll(/checkpoint[^\$]*(\$[\d.]+)/gi);
-      for (const match of costMatches) {
-        const alreadyHasCost = checkpoints.some(cp => cp.cost === match[1]);
+      const costRegex = /checkpoint[^\$]*(\$[\d.]+)/gi;
+      let costMatch;
+      while ((costMatch = costRegex.exec(allText)) !== null) {
+        const alreadyHasCost = checkpoints.some(cp => cp.cost === costMatch[1]);
         if (!alreadyHasCost) {
           checkpoints.push({
             timestamp: null,
-            description: match[0].substring(0, 200),
-            cost: match[1],
+            description: costMatch[0].substring(0, 200),
+            cost: costMatch[1],
             durationSeconds: null,
             index: index++,
           });

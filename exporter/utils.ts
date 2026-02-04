@@ -180,6 +180,68 @@ export function exportToCsv(exports: ReplExport[], outputDir: string): string {
   return filePath;
 }
 
+export function exportWorkTrackingCsv(exports: ReplExport[], outputDir: string): string {
+  interface WorkRow {
+    replId: string;
+    timestamp: string;
+    durationSeconds: string;
+    durationFormatted: string;
+    cost: string;
+    description: string;
+  }
+  
+  const rows: WorkRow[] = [];
+  
+  for (const exp of exports) {
+    for (const cp of exp.checkpoints) {
+      // Format duration as HH:MM:SS
+      let durationFormatted = '';
+      if (cp.durationSeconds) {
+        const hours = Math.floor(cp.durationSeconds / 3600);
+        const minutes = Math.floor((cp.durationSeconds % 3600) / 60);
+        const seconds = cp.durationSeconds % 60;
+        durationFormatted = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+      }
+      
+      rows.push({
+        replId: exp.replId,
+        timestamp: cp.timestamp || '',
+        durationSeconds: cp.durationSeconds?.toString() || '',
+        durationFormatted,
+        cost: cp.cost || '',
+        description: cp.description.substring(0, 200).replace(/\n/g, ' '),
+      });
+    }
+  }
+  
+  // Sort by replId, then by timestamp
+  rows.sort((a, b) => {
+    if (a.replId !== b.replId) return a.replId.localeCompare(b.replId);
+    return a.timestamp.localeCompare(b.timestamp);
+  });
+  
+  // Generate CSV
+  const headers = ['replId', 'timestamp', 'durationSeconds', 'durationFormatted', 'cost', 'description'];
+  const csvLines = [headers.join(',')];
+  
+  for (const row of rows) {
+    const values = headers.map(h => {
+      const val = (row as any)[h] ?? '';
+      const strVal = String(val);
+      // Escape quotes and wrap in quotes if contains comma, quote, or newline
+      if (strVal.includes(',') || strVal.includes('"') || strVal.includes('\n') || strVal.includes('\r')) {
+        return `"${strVal.replace(/"/g, '""').replace(/\r\n/g, ' ').replace(/\n/g, ' ')}"`;
+      }
+      return strVal;
+    });
+    csvLines.push(values.join(','));
+  }
+  
+  const filePath = path.join(outputDir, 'work-tracking.csv');
+  fs.writeFileSync(filePath, csvLines.join('\n'), 'utf-8');
+  return filePath;
+}
+
 export function ensureDir(dir: string): void {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });

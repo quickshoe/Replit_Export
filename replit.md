@@ -58,8 +58,11 @@ npx tsx exporter/index.ts --clear-session
 ## Output Files
 
 - `./exports/{replId}.json` - Individual JSON export per repl
-- `./exports/all-events.csv` - Combined CSV with all events
+- `./exports/all-events.csv` - Combined CSV with all messages and checkpoints
+- `./exports/work-tracking.csv` - Simplified CSV with time worked and agent usage
 
 ## Recent Changes
 
+- 2026-02-04: Added work-tracking.csv output for simplified time/cost tracking
+- 2026-02-04: Fixed login redirect detection - tool now waits for re-authentication when session expires
 - 2026-02-03: Initial implementation with Playwright scraper

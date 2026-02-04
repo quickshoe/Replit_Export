@@ -41,7 +41,8 @@ Press Enter on an empty line to start processing.
 
 Find your exports in the `./exports/` directory:
 - `{replId}.json` - Individual JSON file per app
-- `all-events.csv` - Combined CSV with all events
+- `all-events.csv` - Combined CSV with all messages and checkpoints
+- `work-tracking.csv` - Simplified CSV with just time worked and agent usage
 
 ## Command Line Options
 
