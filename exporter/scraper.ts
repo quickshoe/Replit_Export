@@ -31,24 +31,31 @@ export class ReplitScraper {
     }
   }
 
-  async waitForLogin(): Promise<void> {
+  async waitForLogin(page?: Page): Promise<void> {
     if (!this.context) throw new Error('Browser not initialized');
 
-    const page = await this.context.newPage();
-    await page.goto('https://replit.com/login');
+    const loginPage = page || await this.context.newPage();
+    const shouldClosePage = !page;
+    
+    // Only navigate if we're not already on a login-related page
+    const currentUrl = loginPage.url();
+    if (!currentUrl.includes('/login') && !currentUrl.includes('/signup')) {
+      await loginPage.goto('https://replit.com/login');
+    }
 
     console.log('\n========================================');
     console.log('Please log in to Replit in the browser window.');
     console.log('The script will continue automatically once you are logged in.');
+    console.log('(5 minute timeout)');
     console.log('========================================\n');
 
     try {
-      await page.waitForURL((url) => {
-        const path = url.pathname;
-        return !path.includes('/login') && !path.includes('/signup');
+      await loginPage.waitForURL((url) => {
+        const urlPath = url.pathname;
+        return !urlPath.includes('/login') && !urlPath.includes('/signup');
       }, { timeout: 300000 });
 
-      await page.waitForTimeout(2000);
+      await loginPage.waitForTimeout(2000);
 
       console.log('Login detected! Saving session...');
       
@@ -61,7 +68,9 @@ export class ReplitScraper {
       throw new Error('Failed to detect login. Please try again.');
     }
 
-    await page.close();
+    if (shouldClosePage) {
+      await loginPage.close();
+    }
   }
 
   async checkLoggedIn(): Promise<boolean> {
@@ -70,6 +79,13 @@ export class ReplitScraper {
     const page = await this.context.newPage();
     try {
       await page.goto('https://replit.com/', { waitUntil: 'networkidle' });
+      
+      const currentUrl = page.url();
+      // If redirected to login, we're not logged in
+      if (currentUrl.includes('/login') || currentUrl.includes('/signup')) {
+        await page.close();
+        return false;
+      }
       
       const isLoggedIn = await page.evaluate(() => {
         const hasAvatar = !!document.querySelector('[data-cy="user-menu"]') || 
@@ -89,6 +105,24 @@ export class ReplitScraper {
     }
   }
 
+  private isLoginPage(url: string): boolean {
+    return url.includes('/login') || url.includes('/signup') || url.includes('/auth');
+  }
+
+  private async handleLoginRedirect(page: Page): Promise<void> {
+    const currentUrl = page.url();
+    
+    if (this.isLoginPage(currentUrl)) {
+      console.log('\n⚠️  Redirected to login page. Session may have expired.');
+      console.log('Please log in again in the browser window...\n');
+      
+      // Wait for user to complete login on this page
+      await this.waitForLogin(page);
+      
+      console.log('Login successful! Continuing...\n');
+    }
+  }
+
   async scrapeRepl(replUrl: string): Promise<ReplExport> {
     if (!this.context) throw new Error('Browser not initialized');
 
@@ -100,12 +134,35 @@ export class ReplitScraper {
     const fullUrl = replUrl.startsWith('http') ? replUrl : `https://replit.com/${replUrl}`;
     console.log(`Navigating to: ${fullUrl}`);
     
-    await page.goto(fullUrl, { waitUntil: 'networkidle', timeout: 60000 });
+    try {
+      await page.goto(fullUrl, { waitUntil: 'networkidle', timeout: 60000 });
+    } catch (err) {
+      console.log('Initial navigation timeout, checking if page loaded...');
+    }
+    
     await page.waitForTimeout(3000);
+
+    // Check if we got redirected to login
+    await this.handleLoginRedirect(page);
+
+    // If we were on login, navigate to the repl again
+    const currentUrl = page.url();
+    if (!currentUrl.includes(replUrl) && !this.isLoginPage(currentUrl)) {
+      // We might be on the homepage after login, navigate to repl
+      console.log('Navigating to repl after login...');
+      await page.goto(fullUrl, { waitUntil: 'networkidle', timeout: 60000 });
+      await page.waitForTimeout(3000);
+      
+      // Check again for login redirect
+      await this.handleLoginRedirect(page);
+    }
 
     // Navigate to Agent tab
     console.log('Looking for Agent tab...');
     await this.navigateToAgentTab(page, fullUrl);
+
+    // Check for login redirect after navigating to agent tab
+    await this.handleLoginRedirect(page);
 
     // Wait for chat content to load
     await page.waitForTimeout(2000);
@@ -124,6 +181,14 @@ export class ReplitScraper {
     // Calculate durations for checkpoints
     for (const cp of checkpoints) {
       cp.durationSeconds = calculateDuration(cp.timestamp, messages);
+    }
+
+    // Save session after successful scrape
+    try {
+      const storageState = await this.context.storageState();
+      fs.writeFileSync(SESSION_FILE, JSON.stringify(storageState, null, 2));
+    } catch (err) {
+      console.log('Note: Could not update session file');
     }
 
     await page.close();
@@ -171,7 +236,11 @@ export class ReplitScraper {
         ? `${fullUrl}&tab=agent` 
         : `${fullUrl}?tab=agent`;
       console.log('Trying direct agent URL...');
-      await page.goto(agentUrl, { waitUntil: 'networkidle', timeout: 60000 });
+      try {
+        await page.goto(agentUrl, { waitUntil: 'networkidle', timeout: 60000 });
+      } catch (err) {
+        console.log('Agent URL navigation timeout, checking if page loaded...');
+      }
       await page.waitForTimeout(3000);
     }
   }

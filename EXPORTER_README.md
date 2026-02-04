@@ -136,6 +136,12 @@ npx playwright install chromium
 - Wait a moment after the page loads
 - If it times out, try running again (session should be saved)
 
+### Redirected to login during export
+- If your session expires while exporting, the tool will pause and wait for you to log in again
+- Simply complete the login in the browser window
+- The tool will automatically continue after detecting successful login
+- You have 5 minutes to complete the login
+
 ### Empty exports
 - The tool uses DOM selectors to find chat elements
 - If Replit's UI has changed, the selectors may need updating
