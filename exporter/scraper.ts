@@ -49,42 +49,110 @@ export class ReplitScraper {
     console.log('(5 minute timeout)');
     console.log('========================================\n');
 
-    try {
-      // Wait for navigation away from login/auth pages to a Replit page
-      await loginPage.waitForURL((url) => {
-        const urlStr = url.toString();
-        const urlPath = url.pathname;
-        // We're logged in when we're on replit.com and NOT on login/signup/auth pages
-        const isOnReplit = urlStr.includes('replit.com');
-        const isOnAuthPage = urlPath.includes('/login') || urlPath.includes('/signup') || urlPath.includes('/auth');
-        const isOnGithub = urlStr.includes('github.com');
-        return isOnReplit && !isOnAuthPage && !isOnGithub;
-      }, { timeout: 300000 });
+    const startTime = Date.now();
+    const timeout = 300000; // 5 minutes
+    let loginSuccess = false;
 
-      // Wait a bit longer to ensure OAuth flow completes and cookies are set
-      await loginPage.waitForTimeout(3000);
-
-      // Verify we're actually logged in by checking for auth cookies
-      const cookies = await this.context.cookies('https://replit.com');
-      const hasAuthCookies = cookies.some(c => 
-        c.name.includes('connect.sid') || 
-        c.name.includes('ajs_user_id')
-      );
-
-      if (!hasAuthCookies) {
-        console.log('Waiting for authentication to complete...');
-        await loginPage.waitForTimeout(3000);
+    // Poll for login completion instead of using waitForURL
+    // This is more resilient to OAuth redirect errors
+    while (Date.now() - startTime < timeout && !loginSuccess) {
+      try {
+        await loginPage.waitForTimeout(2000);
+        
+        // Check if we're back on Replit (even if there was an error during redirect)
+        const currentUrl = loginPage.url();
+        const isOnReplit = currentUrl.includes('replit.com');
+        const isOnAuthPage = currentUrl.includes('/login') || currentUrl.includes('/signup') || currentUrl.includes('/__/auth');
+        const isOnGithub = currentUrl.includes('github.com');
+        
+        // Check for auth cookies - this is the real indicator of successful login
+        const cookies = await this.context.cookies('https://replit.com');
+        const hasAuthCookies = cookies.some(c => 
+          c.name.includes('connect.sid') || 
+          c.name.includes('ajs_user_id') ||
+          c.name.includes('replit_authed')
+        );
+        
+        if (hasAuthCookies) {
+          console.log('Authentication cookies detected!');
+          loginSuccess = true;
+          break;
+        }
+        
+        // If we're on Replit but not on auth pages, try to detect login via page content
+        if (isOnReplit && !isOnAuthPage && !isOnGithub) {
+          // Give cookies a moment to be set
+          await loginPage.waitForTimeout(2000);
+          
+          // Recheck cookies
+          const recheckedCookies = await this.context.cookies('https://replit.com');
+          const hasAuthCookiesNow = recheckedCookies.some(c => 
+            c.name.includes('connect.sid') || 
+            c.name.includes('ajs_user_id') ||
+            c.name.includes('replit_authed')
+          );
+          
+          if (hasAuthCookiesNow) {
+            console.log('Authentication cookies detected after navigation!');
+            loginSuccess = true;
+            break;
+          }
+          
+          // Check if we can see user-specific elements on the page
+          const isLoggedInByContent = await loginPage.evaluate(function() {
+            // Look for indicators that user is logged in
+            var body = document.body.innerText.toLowerCase();
+            var hasUserMenu = document.querySelector('[data-cy="user-menu"]') !== null;
+            var hasAvatar = document.querySelector('[class*="Avatar"]') !== null;
+            var hasHomepage = body.indexOf('your repls') >= 0 || body.indexOf('my repls') >= 0;
+            return hasUserMenu || hasAvatar || hasHomepage;
+          });
+          
+          if (isLoggedInByContent) {
+            console.log('Login detected via page content!');
+            loginSuccess = true;
+            break;
+          }
+        }
+        
+        // Log progress
+        const elapsed = Math.round((Date.now() - startTime) / 1000);
+        if (elapsed % 10 === 0) {
+          process.stdout.write(`\rWaiting for login... (${elapsed}s elapsed, on: ${currentUrl.substring(0, 50)}...)`);
+        }
+        
+      } catch (pollErr) {
+        // Ignore errors during polling - page might be navigating
+        continue;
       }
+    }
 
-      console.log('Login detected! Saving session...');
+    if (loginSuccess) {
+      console.log('\nLogin detected! Saving session...');
       
       const storageState = await this.context.storageState();
       fs.writeFileSync(SESSION_FILE, JSON.stringify(storageState, null, 2));
       console.log(`Session saved to ${SESSION_FILE}`);
-
-    } catch (err) {
-      console.error('Login timeout or error:', err);
-      throw new Error('Failed to detect login. Please try again.');
+    } else {
+      // Manual fallback - ask user if they completed login
+      console.log('\n========================================');
+      console.log('Automatic login detection did not complete.');
+      console.log('If you have successfully logged in via OAuth, we can still try to continue.');
+      console.log('========================================\n');
+      
+      // Try one more cookie check
+      const finalCookies = await this.context.cookies('https://replit.com');
+      const hasAnyCookies = finalCookies.length > 0;
+      
+      if (hasAnyCookies) {
+        console.log('Some cookies were set. Attempting to continue anyway...');
+        const storageState = await this.context.storageState();
+        fs.writeFileSync(SESSION_FILE, JSON.stringify(storageState, null, 2));
+        console.log(`Session saved to ${SESSION_FILE}`);
+        console.log('If scraping fails, please run with --clear-session and try again.');
+      } else {
+        throw new Error('Failed to detect login. Please try again with --clear-session');
+      }
     }
 
     if (shouldClosePage) {
