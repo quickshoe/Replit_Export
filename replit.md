@@ -63,7 +63,20 @@ npx tsx exporter/index.ts --clear-session
 
 ## Recent Changes
 
+- 2026-02-04: Fixed __name error completely - converted all named function declarations to var assignments in page.evaluate
+- 2026-02-04: Added "Show previous messages" button click detection to load full chat history
+- 2026-02-04: Improved login flow to avoid multiple prompts - better OAuth/GitHub login handling
 - 2026-02-04: Fixed page.evaluate error by using ES5 syntax in browser context (avoids tsx __name helper issue)
 - 2026-02-04: Added work-tracking.csv output for simplified time/cost tracking
 - 2026-02-04: Fixed login redirect detection - tool now waits for re-authentication when session expires
 - 2026-02-03: Initial implementation with Playwright scraper
+
+## Technical Notes
+
+**Important: page.evaluate browser context code must use pure ES5 JavaScript**
+- Use `var` instead of `const/let`
+- Use `var funcName = function(args) {}` instead of `function funcName(args) {}`
+- Use `for` loops instead of `.forEach()` with arrow callbacks
+- Use `.indexOf() >= 0` instead of `.includes()`
+- Do NOT use TypeScript type annotations (`: any[]`, `as HTMLElement`, etc.)
+- This prevents tsx from injecting `__name` helper functions that don't exist in browser context

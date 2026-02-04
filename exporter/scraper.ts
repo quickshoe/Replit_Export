@@ -39,7 +39,7 @@ export class ReplitScraper {
     
     // Only navigate if we're not already on a login-related page
     const currentUrl = loginPage.url();
-    if (!currentUrl.includes('/login') && !currentUrl.includes('/signup')) {
+    if (!currentUrl.includes('/login') && !currentUrl.includes('/signup') && !currentUrl.includes('/auth') && !currentUrl.includes('github.com')) {
       await loginPage.goto('https://replit.com/login');
     }
 
@@ -50,12 +50,31 @@ export class ReplitScraper {
     console.log('========================================\n');
 
     try {
+      // Wait for navigation away from login/auth pages to a Replit page
       await loginPage.waitForURL((url) => {
+        const urlStr = url.toString();
         const urlPath = url.pathname;
-        return !urlPath.includes('/login') && !urlPath.includes('/signup');
+        // We're logged in when we're on replit.com and NOT on login/signup/auth pages
+        const isOnReplit = urlStr.includes('replit.com');
+        const isOnAuthPage = urlPath.includes('/login') || urlPath.includes('/signup') || urlPath.includes('/auth');
+        const isOnGithub = urlStr.includes('github.com');
+        return isOnReplit && !isOnAuthPage && !isOnGithub;
       }, { timeout: 300000 });
 
-      await loginPage.waitForTimeout(2000);
+      // Wait a bit longer to ensure OAuth flow completes and cookies are set
+      await loginPage.waitForTimeout(3000);
+
+      // Verify we're actually logged in by checking for auth cookies
+      const cookies = await this.context.cookies('https://replit.com');
+      const hasAuthCookies = cookies.some(c => 
+        c.name.includes('connect.sid') || 
+        c.name.includes('ajs_user_id')
+      );
+
+      if (!hasAuthCookies) {
+        console.log('Waiting for authentication to complete...');
+        await loginPage.waitForTimeout(3000);
+      }
 
       console.log('Login detected! Saving session...');
       
@@ -76,29 +95,42 @@ export class ReplitScraper {
   async checkLoggedIn(): Promise<boolean> {
     if (!this.context) throw new Error('Browser not initialized');
 
+    // First, check if we have cookies in our session
+    const cookies = await this.context.cookies('https://replit.com');
+    const hasAuthCookies = cookies.some(c => 
+      c.name.includes('connect.sid') || 
+      c.name.includes('replit') ||
+      c.name.includes('ajs_user_id')
+    );
+    
+    if (!hasAuthCookies) {
+      console.log('No auth cookies found in session.');
+      return false;
+    }
+
+    // Do a quick check without loading full page - just check if we get redirected
     const page = await this.context.newPage();
     try {
-      await page.goto('https://replit.com/', { waitUntil: 'networkidle' });
+      // Navigate to a lightweight endpoint to check auth status
+      const response = await page.goto('https://replit.com/~', { 
+        waitUntil: 'domcontentloaded',
+        timeout: 30000 
+      });
+      
+      // Give a moment for any redirects
+      await page.waitForTimeout(1000);
       
       const currentUrl = page.url();
-      // If redirected to login, we're not logged in
-      if (currentUrl.includes('/login') || currentUrl.includes('/signup')) {
+      
+      // If we're on login page, we're not logged in
+      if (this.isLoginPage(currentUrl)) {
         await page.close();
         return false;
       }
       
-      const isLoggedIn = await page.evaluate(function() {
-        var hasAvatar = !!document.querySelector('[data-cy="user-menu"]') || 
-                         !!document.querySelector('[data-testid="user-menu"]') ||
-                         !!document.querySelector('button[aria-label*="user"]') ||
-                         !!document.querySelector('[class*="Avatar"]');
-        var hasCreateButton = !!document.querySelector('button:has-text("Create Repl")') ||
-                               !!document.querySelector('[data-cy="create-repl-button"]');
-        return hasAvatar || hasCreateButton;
-      });
-
+      // If we made it to home or dashboard, we're logged in
       await page.close();
-      return isLoggedIn;
+      return true;
     } catch {
       await page.close();
       return false;
@@ -287,8 +319,8 @@ export class ReplitScraper {
           '[class*="AssistantMessage"]'
         ];
         var count = 0;
-        for (var i = 0; i < selectors.length; i++) {
-          count += document.querySelectorAll(selectors[i]).length;
+        for (var k = 0; k < selectors.length; k++) {
+          count += document.querySelectorAll(selectors[k]).length;
         }
         return count;
       });
@@ -308,7 +340,50 @@ export class ReplitScraper {
         }
       }, containerSelector);
 
-      await page.waitForTimeout(800);
+      await page.waitForTimeout(500);
+
+      // Try to click "Show previous messages" or similar buttons
+      const clickedLoadMore = await this.clickLoadMoreButton(page);
+      if (clickedLoadMore) {
+        process.stdout.write(`\rClicked load more button, waiting for new messages...`);
+        
+        // Wait for new messages to appear by polling
+        let loadWaitAttempts = 0;
+        const maxLoadWaitAttempts = 10;
+        let newCount = currentCount;
+        
+        while (loadWaitAttempts < maxLoadWaitAttempts) {
+          await page.waitForTimeout(500);
+          newCount = await page.evaluate(function() {
+            var selectors = [
+              '[data-testid*="message"]',
+              '[data-cy*="message"]',
+              '[class*="ChatMessage"]',
+              '[class*="chat-message"]',
+              '[class*="UserMessage"]',
+              '[class*="AgentMessage"]',
+              '[class*="AssistantMessage"]'
+            ];
+            var count = 0;
+            for (var k = 0; k < selectors.length; k++) {
+              count += document.querySelectorAll(selectors[k]).length;
+            }
+            return count;
+          });
+          
+          if (newCount > currentCount) {
+            process.stdout.write(`\rLoaded ${newCount - currentCount} new messages...`);
+            break;
+          }
+          loadWaitAttempts++;
+        }
+        
+        sameCountIterations = 0; // Reset counter since we clicked a button
+        previousCount = newCount;
+        continue;
+      }
+
+      await page.waitForTimeout(300);
 
       // Check if we loaded new content
       if (currentCount === previousCount) {
@@ -343,13 +418,69 @@ export class ReplitScraper {
     await page.waitForTimeout(500);
   }
 
+  private async clickLoadMoreButton(page: Page): Promise<boolean> {
+    // Try various selectors for "Show previous messages" or "Load more" buttons
+    const loadMoreSelectors = [
+      'button:has-text("Show previous")',
+      'button:has-text("Load more")',
+      'button:has-text("Show earlier")',
+      'button:has-text("Previous messages")',
+      '[data-testid*="load-more"]',
+      '[data-testid*="previous"]',
+      '[data-cy*="load-more"]',
+      '[class*="LoadMore"]',
+      '[class*="load-more"]',
+      '[class*="showPrevious"]',
+      '[class*="ShowPrevious"]',
+    ];
+
+    for (const selector of loadMoreSelectors) {
+      try {
+        const button = await page.$(selector);
+        if (button) {
+          const isVisible = await button.isVisible();
+          if (isVisible) {
+            await button.click();
+            return true;
+          }
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    // Also try finding buttons by text content using evaluate
+    const clicked = await page.evaluate(function() {
+      var buttons = document.querySelectorAll('button, [role="button"], a');
+      for (var i = 0; i < buttons.length; i++) {
+        var btn = buttons[i];
+        var text = (btn.textContent || '').toLowerCase();
+        if (text.indexOf('show previous') >= 0 || 
+            text.indexOf('load more') >= 0 || 
+            text.indexOf('earlier') >= 0 ||
+            text.indexOf('previous message') >= 0) {
+          // Check if visible
+          var rect = btn.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) {
+            // Use bracket notation to avoid TS error - click exists on HTMLElements
+            if (btn['click']) btn['click']();
+            return true;
+          }
+        }
+      }
+      return false;
+    });
+
+    return clicked;
+  }
+
   private async extractChatData(page: Page): Promise<{ messages: ChatMessage[]; checkpoints: Checkpoint[] }> {
     const data = await page.evaluate(function() {
       var messages = [];
       var checkpoints = [];
 
       // Helper to parse timestamps from various formats
-      function parseTimestamp(el) {
+      var parseTimestamp = function(el) {
         // Look for time elements
         var timeEl = el.querySelector('time, [datetime], [data-timestamp]');
         if (timeEl) {
@@ -369,7 +500,7 @@ export class ReplitScraper {
         if (dateMatch) return dateMatch[1];
         
         return null;
-      }
+      };
 
       // Message selectors in order of specificity
       var messageSelectors = [
