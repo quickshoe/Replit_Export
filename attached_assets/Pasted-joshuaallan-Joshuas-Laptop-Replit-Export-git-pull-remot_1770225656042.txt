@@ -1,0 +1,85 @@
+joshuaallan@Joshuas-Laptop Replit_Export % git pull
+remote: Enumerating objects: 12, done.
+remote: Counting objects: 100% (12/12), done.
+remote: Compressing objects: 100% (3/3), done.
+remote: Total 9 (delta 6), reused 9 (delta 6), pack-reused 0 (from 0)
+Unpacking objects: 100% (9/9), 16.33 KiB | 2.04 MiB/s, done.
+From https://github.com/quickshoe/Replit_Export
+   56be331..ee20ce2  main       -> origin/main
+Updating 56be331..ee20ce2
+Fast-forward
+ attached_assets/playwright-session_1770225079168.json | 696 +++++++++++++++++++++++++++++++++++++++++++++++++++++
+ exporter/scraper.ts                                   |  52 ++--
+ 2 files changed, 722 insertions(+), 26 deletions(-)
+ create mode 100644 attached_assets/playwright-session_1770225079168.json
+joshuaallan@Joshuas-Laptop Replit_Export % git pull
+Already up to date.
+joshuaallan@Joshuas-Laptop Replit_Export % npx tsx exporter/index.ts
+
+╔══════════════════════════════════════════════════════════════╗
+║         Replit Agent Exporter v1.0.0                        ║
+║                                                              ║
+║  This tool exports chat history and checkpoints from        ║
+║  Replit Agent sessions to JSON and CSV files.               ║
+║                                                              ║
+║  Security: Your password is never stored. Only browser      ║
+║  session cookies are saved locally for convenience.         ║
+║  Delete ./playwright-session.json to clear the session.     ║
+╚══════════════════════════════════════════════════════════════╝
+
+Launching browser...
+Found existing session, attempting to restore...
+Session restored successfully.
+Not logged in. Opening login page...
+
+========================================
+Please log in to Replit in the browser window.
+The script will continue automatically once you are logged in.
+(5 minute timeout)
+========================================
+
+Login detected! Saving session...
+Session saved to ./playwright-session.json
+
+========================================
+Enter Replit App URLs or Repl IDs
+(one per line, empty line to finish):
+========================================
+
+> https://replit.com/t/quickshoe-llc/repls/Replit-Export-Tool
+> 
+
+Processing 1 repl(s)...
+
+
+[1/1] Processing: https://replit.com/t/quickshoe-llc/repls/Replit-Export-Tool
+
+Scraping: t-quickshoe-llc
+Navigating to: https://replit.com/t/quickshoe-llc/repls/Replit-Export-Tool
+Initial navigation timeout, checking if page loaded...
+Looking for Agent tab...
+Clicked Agent tab
+Scrolling to load full chat history...
+Scroll iteration 5/100 (40 elements)...
+Reached top of chat history (40 elements found)
+
+Extracting chat data...
+  ✗ Error processing https://replit.com/t/quickshoe-llc/repls/Replit-Export-Tool: page.evaluate: ReferenceError: __name is not defined
+    at eval (eval at evaluate (:290:30), <anonymous>:1:600)
+    at UtilityScript.evaluate (<anonymous>:292:16)
+    at UtilityScript.<anonymous> (<anonymous>:1:44)
+    at ReplitScraper.extractChatData (/Users/joshuaallan/Documents/GitHub/Replit_Export/exporter/scraper.ts:347:29)
+    at ReplitScraper.scrapeRepl (/Users/joshuaallan/Documents/GitHub/Replit_Export/exporter/scraper.ts:179:50)
+    at async main (/Users/joshuaallan/Documents/GitHub/Replit_Export/exporter/index.ts:128:22)
+
+╔══════════════════════════════════════════════════════════════╗
+║                     Export Complete!                         ║
+╠══════════════════════════════════════════════════════════════╣
+║  Processed: 0   repl(s)                                    ║
+║  Output:    ./exports                                    ║
+║                                                              ║
+║  Files created:                                              ║
+║    • Individual JSON files per repl                          ║
+║    • all-events.csv (full chat + checkpoints)                ║
+║    • work-tracking.csv (time & cost summary)                 ║
+╚══════════════════════════════════════════════════════════════╝
