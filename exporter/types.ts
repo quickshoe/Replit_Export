@@ -13,12 +13,30 @@ export interface Checkpoint {
   index: number;
 }
 
+export interface WorkEntry {
+  timestamp: string | null;
+  duration: string;
+  durationSeconds: number | null;
+  description: string;
+  agentUsageCharge: string | null;
+  chargeDetails: AgentUsageDetail[];
+  index: number;
+}
+
+export interface AgentUsageDetail {
+  label: string;
+  amount: string;
+  replId?: string;
+  timestamp?: string | null;
+}
+
 export interface ReplExport {
   replId: string;
   replUrl: string;
   exportedAt: string;
   messages: ChatMessage[];
   checkpoints: Checkpoint[];
+  workEntries: WorkEntry[];
 }
 
 export interface CsvRow {

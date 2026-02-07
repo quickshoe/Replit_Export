@@ -4,7 +4,7 @@ import { Command } from 'commander';
 import * as readline from 'readline';
 import * as fs from 'fs';
 import { ReplitScraper } from './scraper';
-import { saveJsonExport, exportToCsv, exportWorkTrackingCsv, ensureDir } from './utils';
+import { saveJsonExport, exportToCsv, exportWorkTrackingCsv, exportAgentUsageDetailsCsv, ensureDir } from './utils';
 import type { ReplExport } from './types';
 
 const OUTPUT_DIR = './exports';
@@ -143,6 +143,9 @@ async function main() {
       
       const workTrackingPath = exportWorkTrackingCsv(exports, outputDir);
       console.log(`✓ Work tracking CSV saved: ${workTrackingPath}`);
+      
+      const agentUsagePath = exportAgentUsageDetailsCsv(exports, outputDir);
+      console.log(`✓ Agent usage details CSV saved: ${agentUsagePath}`);
     }
 
     console.log(`
@@ -156,6 +159,7 @@ async function main() {
 ║    • Individual JSON files per repl                          ║
 ║    • all-events.csv (full chat + checkpoints)                ║
 ║    • work-tracking.csv (time & cost summary)                 ║
+║    • agent-usage-details.csv (charge line items)             ║
 ╚══════════════════════════════════════════════════════════════╝
 `);
 

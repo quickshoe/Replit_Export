@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import type { ReplExport, CsvRow, ChatMessage, Checkpoint } from './types';
+import type { ReplExport, CsvRow, ChatMessage, Checkpoint, AgentUsageDetail } from './types';
 
 export function extractReplId(urlOrId: string): string {
   const trimmed = urlOrId.trim();
@@ -184,6 +184,7 @@ export function exportWorkTrackingCsv(exports: ReplExport[], outputDir: string):
   interface WorkRow {
     replId: string;
     timestamp: string;
+    duration: string;
     durationSeconds: string;
     durationFormatted: string;
     cost: string;
@@ -193,42 +194,61 @@ export function exportWorkTrackingCsv(exports: ReplExport[], outputDir: string):
   const rows: WorkRow[] = [];
   
   for (const exp of exports) {
-    for (const cp of exp.checkpoints) {
-      // Format duration as HH:MM:SS
-      let durationFormatted = '';
-      if (cp.durationSeconds) {
-        const hours = Math.floor(cp.durationSeconds / 3600);
-        const minutes = Math.floor((cp.durationSeconds % 3600) / 60);
-        const seconds = cp.durationSeconds % 60;
-        durationFormatted = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+    if (exp.workEntries && exp.workEntries.length > 0) {
+      for (const we of exp.workEntries) {
+        let durationFormatted = '';
+        if (we.durationSeconds) {
+          const hours = Math.floor(we.durationSeconds / 3600);
+          const minutes = Math.floor((we.durationSeconds % 3600) / 60);
+          const seconds = we.durationSeconds % 60;
+          durationFormatted = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+        }
+        
+        rows.push({
+          replId: exp.replId,
+          timestamp: we.timestamp || '',
+          duration: we.duration || '',
+          durationSeconds: we.durationSeconds?.toString() || '',
+          durationFormatted,
+          cost: we.agentUsageCharge || '',
+          description: we.description.substring(0, 500).replace(/\n/g, ' '),
+        });
       }
-      
-      rows.push({
-        replId: exp.replId,
-        timestamp: cp.timestamp || '',
-        durationSeconds: cp.durationSeconds?.toString() || '',
-        durationFormatted,
-        cost: cp.cost || '',
-        description: cp.description.substring(0, 200).replace(/\n/g, ' '),
-      });
+    } else {
+      for (const cp of exp.checkpoints) {
+        let durationFormatted = '';
+        if (cp.durationSeconds) {
+          const hours = Math.floor(cp.durationSeconds / 3600);
+          const minutes = Math.floor((cp.durationSeconds % 3600) / 60);
+          const seconds = cp.durationSeconds % 60;
+          durationFormatted = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+        }
+        
+        rows.push({
+          replId: exp.replId,
+          timestamp: cp.timestamp || '',
+          duration: '',
+          durationSeconds: cp.durationSeconds?.toString() || '',
+          durationFormatted,
+          cost: cp.cost || '',
+          description: cp.description.substring(0, 500).replace(/\n/g, ' '),
+        });
+      }
     }
   }
   
-  // Sort by replId, then by timestamp
   rows.sort((a, b) => {
     if (a.replId !== b.replId) return a.replId.localeCompare(b.replId);
     return a.timestamp.localeCompare(b.timestamp);
   });
   
-  // Generate CSV
-  const headers = ['replId', 'timestamp', 'durationSeconds', 'durationFormatted', 'cost', 'description'];
+  const headers = ['replId', 'timestamp', 'duration', 'durationSeconds', 'durationFormatted', 'cost', 'description'];
   const csvLines = [headers.join(',')];
   
   for (const row of rows) {
     const values = headers.map(h => {
       const val = (row as any)[h] ?? '';
       const strVal = String(val);
-      // Escape quotes and wrap in quotes if contains comma, quote, or newline
       if (strVal.includes(',') || strVal.includes('"') || strVal.includes('\n') || strVal.includes('\r')) {
         return `"${strVal.replace(/"/g, '""').replace(/\r\n/g, ' ').replace(/\n/g, ' ')}"`;
       }
@@ -238,6 +258,70 @@ export function exportWorkTrackingCsv(exports: ReplExport[], outputDir: string):
   }
   
   const filePath = path.join(outputDir, 'work-tracking.csv');
+  fs.writeFileSync(filePath, csvLines.join('\n'), 'utf-8');
+  return filePath;
+}
+
+export function exportAgentUsageDetailsCsv(exports: ReplExport[], outputDir: string): string {
+  interface DetailRow {
+    replId: string;
+    timestamp: string;
+    duration: string;
+    lineItemLabel: string;
+    lineItemAmount: string;
+    totalAgentUsage: string;
+  }
+  
+  const rows: DetailRow[] = [];
+  
+  for (const exp of exports) {
+    if (!exp.workEntries) continue;
+    for (const we of exp.workEntries) {
+      if (we.chargeDetails && we.chargeDetails.length > 0) {
+        for (const detail of we.chargeDetails) {
+          rows.push({
+            replId: exp.replId,
+            timestamp: we.timestamp || '',
+            duration: we.duration || '',
+            lineItemLabel: detail.label,
+            lineItemAmount: detail.amount,
+            totalAgentUsage: we.agentUsageCharge || '',
+          });
+        }
+      } else if (we.agentUsageCharge) {
+        rows.push({
+          replId: exp.replId,
+          timestamp: we.timestamp || '',
+          duration: we.duration || '',
+          lineItemLabel: 'Total',
+          lineItemAmount: we.agentUsageCharge,
+          totalAgentUsage: we.agentUsageCharge,
+        });
+      }
+    }
+  }
+  
+  rows.sort((a, b) => {
+    if (a.replId !== b.replId) return a.replId.localeCompare(b.replId);
+    return a.timestamp.localeCompare(b.timestamp);
+  });
+  
+  const headers = ['replId', 'timestamp', 'duration', 'lineItemLabel', 'lineItemAmount', 'totalAgentUsage'];
+  const csvLines = [headers.join(',')];
+  
+  for (const row of rows) {
+    const values = headers.map(h => {
+      const val = (row as any)[h] ?? '';
+      const strVal = String(val);
+      if (strVal.includes(',') || strVal.includes('"') || strVal.includes('\n') || strVal.includes('\r')) {
+        return `"${strVal.replace(/"/g, '""').replace(/\r\n/g, ' ').replace(/\n/g, ' ')}"`;
+      }
+      return strVal;
+    });
+    csvLines.push(values.join(','));
+  }
+  
+  const filePath = path.join(outputDir, 'agent-usage-details.csv');
   fs.writeFileSync(filePath, csvLines.join('\n'), 'utf-8');
   return filePath;
 }

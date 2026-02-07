@@ -1,7 +1,7 @@
 import { chromium, Browser, BrowserContext, Page } from 'playwright';
 import * as fs from 'fs';
 import * as path from 'path';
-import type { ChatMessage, Checkpoint, ReplExport } from './types';
+import type { ChatMessage, Checkpoint, WorkEntry, AgentUsageDetail, ReplExport } from './types';
 import { calculateDuration, extractReplId } from './utils';
 
 const SESSION_FILE = './playwright-session.json';
@@ -257,12 +257,8 @@ export class ReplitScraper {
       await this.handleLoginRedirect(page);
     }
 
-    // Navigate to Agent tab
-    console.log('Looking for Agent tab...');
-    await this.navigateToAgentTab(page, fullUrl);
-
-    // Check for login redirect after navigating to agent tab
-    await this.handleLoginRedirect(page);
+    // Agent chat is always visible in the side panel (left or right)
+    // No need to navigate to a separate Agent tab
 
     // Wait for chat content to load
     await page.waitForTimeout(2000);
@@ -274,9 +270,13 @@ export class ReplitScraper {
     console.log('Scrolling to load full chat history...');
     await this.scrollToLoadAll(page, chatContainer);
 
-    // Extract messages and checkpoints
+    // Expand all collapsed "Worked for X" and "X messages & X actions" sections
+    console.log('Expanding collapsed sections...');
+    await this.expandAllCollapsedSections(page);
+
+    // Extract messages, checkpoints, and work entries
     console.log('Extracting chat data...');
-    const { messages, checkpoints } = await this.extractChatData(page, outputDir);
+    const { messages, checkpoints, workEntries } = await this.extractChatData(page, outputDir);
 
     // Calculate durations for checkpoints
     for (const cp of checkpoints) {
@@ -299,49 +299,69 @@ export class ReplitScraper {
       exportedAt: new Date().toISOString(),
       messages,
       checkpoints,
+      workEntries,
     };
 
-    console.log(`Found ${messages.length} messages and ${checkpoints.length} checkpoints`);
+    console.log(`Found ${messages.length} messages, ${checkpoints.length} checkpoints, and ${workEntries.length} work entries`);
     return result;
   }
 
-  private async navigateToAgentTab(page: Page, fullUrl: string): Promise<void> {
-    // Try clicking Agent tab with various selectors
-    const agentTabSelectors = [
-      '[data-testid="agent-tab"]',
-      '[data-cy="agent-tab"]',
-      'button:has-text("Agent")',
-      '[role="tab"]:has-text("Agent")',
-      'a:has-text("Agent")',
-      '[aria-label*="Agent"]',
-    ];
+  private async expandAllCollapsedSections(page: Page): Promise<void> {
+    var expandedCount = 0;
+    var maxRounds = 5;
 
-    for (const selector of agentTabSelectors) {
-      try {
-        const tab = await page.$(selector);
-        if (tab) {
-          await tab.click();
-          console.log('Clicked Agent tab');
-          await page.waitForTimeout(2000);
-          return;
+    for (var round = 0; round < maxRounds; round++) {
+      var buttonsClicked = await page.evaluate(function() {
+        var clicked = 0;
+        var expandButtons = document.querySelectorAll('[class*="ExpandableFeedContent"], [class*="expandableButton"]');
+        for (var i = 0; i < expandButtons.length; i++) {
+          var btn = expandButtons[i];
+          var ariaExpanded = btn.getAttribute('aria-expanded');
+          if (ariaExpanded === 'false' || ariaExpanded === null) {
+            var rect = btn.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) {
+              if (btn['click']) btn['click']();
+              clicked++;
+            }
+          }
         }
-      } catch {
-        continue;
-      }
+
+        var allButtons = document.querySelectorAll('button');
+        for (var j = 0; j < allButtons.length; j++) {
+          var b = allButtons[j];
+          var cls = b.getAttribute('class') || '';
+          if (cls.indexOf('expandable') >= 0 || cls.indexOf('Expandable') >= 0) {
+            var bExpanded = b.getAttribute('aria-expanded');
+            if (bExpanded === 'false' || bExpanded === null) {
+              var bRect = b.getBoundingClientRect();
+              if (bRect.width > 0 && bRect.height > 0) {
+                var alreadyCounted = false;
+                for (var k = 0; k < expandButtons.length; k++) {
+                  if (expandButtons[k] === b) { alreadyCounted = true; break; }
+                }
+                if (!alreadyCounted) {
+                  if (b['click']) b['click']();
+                  clicked++;
+                }
+              }
+            }
+          }
+        }
+        return clicked;
+      });
+
+      if (buttonsClicked === 0) break;
+
+      expandedCount += buttonsClicked;
+      process.stdout.write(`\r  Expanded ${expandedCount} sections (round ${round + 1})...`);
+      await page.waitForTimeout(1500);
     }
 
-    // Try URL navigation
-    if (!fullUrl.includes('tab=agent')) {
-      const agentUrl = fullUrl.includes('?') 
-        ? `${fullUrl}&tab=agent` 
-        : `${fullUrl}?tab=agent`;
-      console.log('Trying direct agent URL...');
-      try {
-        await page.goto(agentUrl, { waitUntil: 'networkidle', timeout: 60000 });
-      } catch (err) {
-        console.log('Agent URL navigation timeout, checking if page loaded...');
-      }
-      await page.waitForTimeout(3000);
+    if (expandedCount > 0) {
+      console.log(`\n  Expanded ${expandedCount} collapsed sections total`);
+      await page.waitForTimeout(2000);
+    } else {
+      console.log('  No collapsed sections found to expand');
     }
   }
 
@@ -639,7 +659,7 @@ export class ReplitScraper {
     console.log(`  DOM debug info saved to: ${debugPath}`);
   }
 
-  private async extractChatData(page: Page, outputDir: string = './exports'): Promise<{ messages: ChatMessage[]; checkpoints: Checkpoint[] }> {
+  private async extractChatData(page: Page, outputDir: string = './exports'): Promise<{ messages: ChatMessage[]; checkpoints: Checkpoint[]; workEntries: WorkEntry[] }> {
     try {
       await this.dumpDomStructure(page, outputDir);
     } catch (err) {
@@ -649,15 +669,11 @@ export class ReplitScraper {
     var data = await page.evaluate(function() {
       var messages = [] as any[];
       var checkpoints = [] as any[];
+      var workEntries = [] as any[];
       var index = 0;
       var seenKeys = {} as any;
 
-      // ===== HELPER: safe class string (handles SVG elements with SVGAnimatedString) =====
-      // IMPORTANT: This is inlined everywhere it's needed since we can't define functions
-
       // ===== PRIMARY STRATEGY: Use EventContainer elements =====
-      // From DOM debug: Replit uses EventContainer-module__*__eventContainer classes
-      // and data-event-type / data-cy attributes for chat messages
       var eventContainers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
 
       for (var ei = 0; ei < eventContainers.length; ei++) {
@@ -682,9 +698,117 @@ export class ReplitScraper {
         var evEventType = (evEl.getAttribute('data-event-type') || '').toLowerCase();
         var evCy = (evEl.getAttribute('data-cy') || '').toLowerCase();
 
-        // Also check descendant attributes for classification
         var innerUserMarker = evEl.querySelector('[data-cy="user-message"], [data-event-type="user-message"], [class*="userMessage"], [class*="UserMessage"]');
         var innerCheckpointMarker = evEl.querySelector('[class*="checkpoint"], [class*="Checkpoint"], [data-event-type*="checkpoint"]');
+
+        // ===== WORK ENTRY DETECTION: EndOfRunSummary "Worked for X" =====
+        var endOfRunRoot = evEl.querySelector('[class*="EndOfRunSummary"]');
+        if (!endOfRunRoot) {
+          var ownClass = evEl.getAttribute('class') || '';
+          if (ownClass.indexOf('EndOfRunSummary') >= 0) {
+            endOfRunRoot = evEl;
+          }
+        }
+
+        var workedMatch = rawText.match(/Worked\s+for\s+(\d+\s*(?:second|minute|hour|day|week|month|year)s?(?:\s*(?:and\s*)?\d+\s*(?:second|minute|hour|day|week|month|year)s?)*)/i);
+
+        if (endOfRunRoot || workedMatch) {
+          var wDuration = workedMatch ? workedMatch[1] : '';
+          var wDurationSecs = 0 as any;
+
+          if (wDuration) {
+            var durParts = wDuration.match(/(\d+)\s*(second|minute|hour|day|week|month|year)s?/gi);
+            if (durParts) {
+              for (var dp = 0; dp < durParts.length; dp++) {
+                var durMatch = durParts[dp].match(/(\d+)\s*(second|minute|hour|day|week|month|year)/i);
+                if (durMatch) {
+                  var durVal = parseInt(durMatch[1], 10);
+                  var durUnit = durMatch[2].toLowerCase();
+                  if (durUnit === 'second') wDurationSecs += durVal;
+                  else if (durUnit === 'minute') wDurationSecs += durVal * 60;
+                  else if (durUnit === 'hour') wDurationSecs += durVal * 3600;
+                  else if (durUnit === 'day') wDurationSecs += durVal * 86400;
+                }
+              }
+            }
+          }
+
+          var chargeDetails = [] as any[];
+          var totalCharge = null as any;
+
+          var costMatches = rawText.match(/\$[\d.]+/g);
+          if (costMatches) {
+            for (var ci = 0; ci < costMatches.length; ci++) {
+              totalCharge = costMatches[0];
+            }
+          }
+
+          var searchRoot = endOfRunRoot || evEl;
+          var allTextNodes = searchRoot.querySelectorAll('span, div, p, li');
+          var prevLabel = '';
+          for (var tn = 0; tn < allTextNodes.length; tn++) {
+            var nodeText = (allTextNodes[tn].textContent || '').trim();
+            var chargeMatch = nodeText.match(/^\$[\d.]+$/);
+            if (chargeMatch && prevLabel) {
+              var labelClean = prevLabel.replace(/\s+/g, ' ').trim();
+              if (labelClean.toLowerCase() !== 'agent usage') {
+                chargeDetails.push({
+                  label: labelClean,
+                  amount: chargeMatch[0]
+                });
+              }
+            }
+            if (nodeText.length > 0 && nodeText.length < 200 && !nodeText.match(/^\$[\d.]+$/)) {
+              prevLabel = nodeText;
+            }
+          }
+
+          if (chargeDetails.length === 0 && costMatches && costMatches.length > 0) {
+            var lines = rawText.split('\n');
+            for (var li = 0; li < lines.length; li++) {
+              var line = lines[li].trim();
+              var lineChargeMatch = line.match(/^(.+?)\s*\$(\d+\.?\d*)$/);
+              if (lineChargeMatch) {
+                var lineLabel = lineChargeMatch[1].trim();
+                if (lineLabel.toLowerCase() !== 'agent usage') {
+                  chargeDetails.push({
+                    label: lineLabel,
+                    amount: '$' + lineChargeMatch[2]
+                  });
+                }
+              }
+            }
+          }
+
+          var wDescription = cleanedText.substring(0, 2000);
+          if (workedMatch) {
+            var afterWorked = cleanedText.indexOf(workedMatch[0]);
+            if (afterWorked >= 0) {
+              wDescription = cleanedText.substring(afterWorked + workedMatch[0].length).trim();
+              if (wDescription.length < 10) {
+                wDescription = cleanedText.substring(0, 2000);
+              }
+            }
+          }
+
+          workEntries.push({
+            timestamp: timestamp,
+            duration: workedMatch ? 'Worked for ' + wDuration : '',
+            durationSeconds: wDurationSecs > 0 ? wDurationSecs : null,
+            description: wDescription.substring(0, 2000),
+            agentUsageCharge: totalCharge,
+            chargeDetails: chargeDetails,
+            index: index++
+          });
+
+          messages.push({
+            type: 'agent',
+            content: cleanedText.substring(0, 10000),
+            timestamp: timestamp,
+            index: index++
+          });
+          continue;
+        }
 
         var isCheckpoint = evClass.indexOf('checkpoint') >= 0 ||
           evEventType.indexOf('checkpoint') >= 0 ||
@@ -803,9 +927,9 @@ export class ReplitScraper {
       // ===== CHECKPOINT DETECTION FROM FULL PAGE =====
       var bodyText = document.body.innerText || '';
       var cpRegex = /(?:checkpoint|saved|deployed|created)[^$\n]{0,100}\$(\d+\.?\d*)/gi;
-      var cpMatch;
-      while ((cpMatch = cpRegex.exec(bodyText)) !== null) {
-        var cpCost = '$' + cpMatch[1];
+      var cpMatch2;
+      while ((cpMatch2 = cpRegex.exec(bodyText)) !== null) {
+        var cpCost = '$' + cpMatch2[1];
         var cpAlready = false;
         for (var cpj = 0; cpj < checkpoints.length; cpj++) {
           if (checkpoints[cpj].cost === cpCost) {
@@ -816,7 +940,7 @@ export class ReplitScraper {
         if (!cpAlready) {
           checkpoints.push({
             timestamp: null,
-            description: cpMatch[0].substring(0, 200),
+            description: cpMatch2[0].substring(0, 200),
             cost: cpCost,
             durationSeconds: null,
             index: deduped.length + checkpoints.length
@@ -824,10 +948,10 @@ export class ReplitScraper {
         }
       }
 
-      return { messages: deduped, checkpoints: checkpoints };
+      return { messages: deduped, checkpoints: checkpoints, workEntries: workEntries };
     });
 
-    return data as { messages: ChatMessage[]; checkpoints: Checkpoint[] };
+    return data as { messages: ChatMessage[]; checkpoints: Checkpoint[]; workEntries: WorkEntry[] };
   }
 
   async close(): Promise<void> {
