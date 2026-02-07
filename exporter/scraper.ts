@@ -563,10 +563,9 @@ export class ReplitScraper {
   }
 
   private async dumpDomStructure(page: Page, outputDir: string): Promise<void> {
-    const domInfo = await page.evaluate(function() {
-      var info = { containers: [] as any[], sampleElements: [] as any[], bodyClasses: document.body.className, url: window.location.href };
+    var domInfo = await page.evaluate(function() {
+      var info = { containers: [] as any[], sampleElements: [] as any[], bodyClasses: document.body.getAttribute('class') || '', url: window.location.href };
 
-      // Find scrollable containers that might be the chat area
       var allEls = document.querySelectorAll('div, section, main, article');
       for (var i = 0; i < allEls.length; i++) {
         var el = allEls[i];
@@ -574,13 +573,15 @@ export class ReplitScraper {
         var isScrollable = style.overflowY === 'scroll' || style.overflowY === 'auto';
         var childCount = el.children.length;
         if (isScrollable && childCount > 3) {
-          var childSamples = [] as any[]; // type assertion erased at compile time
+          var childSamples = [] as any[];
           for (var j = 0; j < Math.min(5, childCount); j++) {
             var child = el.children[j];
             childSamples.push({
               tag: child.tagName,
-              className: (child.className || '').substring(0, 200),
+              className: (child.getAttribute('class') || '').substring(0, 200),
               dataTestId: child.getAttribute('data-testid') || '',
+              dataCy: child.getAttribute('data-cy') || '',
+              dataEventType: child.getAttribute('data-event-type') || '',
               role: child.getAttribute('role') || '',
               childCount: child.children.length,
               textLength: (child.textContent || '').trim().length,
@@ -590,7 +591,7 @@ export class ReplitScraper {
           }
           info.containers.push({
             tag: el.tagName,
-            className: (el.className || '').substring(0, 200),
+            className: (el.getAttribute('class') || '').substring(0, 200),
             dataTestId: el.getAttribute('data-testid') || '',
             role: el.getAttribute('role') || '',
             childCount: childCount,
@@ -601,11 +602,12 @@ export class ReplitScraper {
         }
       }
 
-      // Also find elements matching common chat patterns
       var chatPatterns = [
         '[role="log"]', '[role="list"]', '[role="listitem"]',
         '[data-testid*="message"]', '[data-testid*="chat"]', '[data-testid*="turn"]',
+        '[data-cy*="message"]', '[data-event-type]',
         '[class*="Message"]', '[class*="message"]', '[class*="Chat"]', '[class*="chat"]',
+        '[class*="EventContainer"]', '[class*="eventContainer"]',
         '[class*="Turn"]', '[class*="turn"]', '[class*="Checkpoint"]', '[class*="checkpoint"]',
         '[class*="Thread"]', '[class*="thread"]', '[class*="Conversation"]'
       ];
@@ -617,8 +619,10 @@ export class ReplitScraper {
               selector: chatPatterns[k],
               matchCount: matches.length,
               tag: matches[m].tagName,
-              className: (matches[m].className || '').substring(0, 200),
+              className: (matches[m].getAttribute('class') || '').substring(0, 200),
               dataTestId: matches[m].getAttribute('data-testid') || '',
+              dataCy: matches[m].getAttribute('data-cy') || '',
+              dataEventType: matches[m].getAttribute('data-event-type') || '',
               role: matches[m].getAttribute('role') || '',
               textPreview: (matches[m].textContent || '').trim().substring(0, 150),
               outerHTMLPreview: matches[m].outerHTML.substring(0, 500)
@@ -630,222 +634,136 @@ export class ReplitScraper {
       return info;
     });
 
-    // Save debug info
-    const debugPath = path.join(outputDir, 'dom-debug.json');
+    var debugPath = path.join(outputDir, 'dom-debug.json');
     fs.writeFileSync(debugPath, JSON.stringify(domInfo, null, 2), 'utf-8');
     console.log(`  DOM debug info saved to: ${debugPath}`);
   }
 
   private async extractChatData(page: Page, outputDir: string = './exports'): Promise<{ messages: ChatMessage[]; checkpoints: Checkpoint[] }> {
-    // Always dump DOM structure for debugging
     try {
       await this.dumpDomStructure(page, outputDir);
     } catch (err) {
       console.log('  Note: Could not dump DOM structure for debugging');
     }
 
-    const data = await page.evaluate(function() {
+    var data = await page.evaluate(function() {
       var messages = [] as any[];
       var checkpoints = [] as any[];
       var index = 0;
+      var seenKeys = {} as any;
 
-      // ===== STRATEGY 1: Find the chat scroll container by structure =====
-      // Look for the scrollable container with the most text-bearing children
-      var allDivs = document.querySelectorAll('div, section, main');
-      var bestContainer = document.body as Element;
-      var bestScore = 0;
+      // ===== HELPER: safe class string (handles SVG elements with SVGAnimatedString) =====
+      // IMPORTANT: This is inlined everywhere it's needed since we can't define functions
 
-      for (var ci = 0; ci < allDivs.length; ci++) {
-        var container = allDivs[ci];
-        var cStyle = window.getComputedStyle(container);
-        var isScrollable = cStyle.overflowY === 'scroll' || cStyle.overflowY === 'auto';
-        if (!isScrollable) continue;
+      // ===== PRIMARY STRATEGY: Use EventContainer elements =====
+      // From DOM debug: Replit uses EventContainer-module__*__eventContainer classes
+      // and data-event-type / data-cy attributes for chat messages
+      var eventContainers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
 
-        var textChildCount = 0;
-        for (var cj = 0; cj < container.children.length; cj++) {
-          var cChild = container.children[cj];
-          var cText = (cChild.textContent || '').trim();
-          if (cText.length > 20) textChildCount++;
-        }
-        
-        // Score: prefer containers with many text children and significant scroll height
-        var score = textChildCount * 10 + (container.scrollHeight > container.clientHeight ? 100 : 0);
-        if (score > bestScore) {
-          bestScore = score;
-          bestContainer = container;
-        }
-      }
+      for (var ei = 0; ei < eventContainers.length; ei++) {
+        var evEl = eventContainers[ei];
+        var rawText = (evEl.textContent || '').trim();
+        if (rawText.length < 5) continue;
 
-      // ===== Drill down to message level =====
-      // If the container has very few direct children, go deeper to find the actual message list
-      var msgContainer = bestContainer as Element;
-      var drillAttempts = 0;
-      while (msgContainer.children.length <= 3 && msgContainer.children.length > 0 && drillAttempts < 5) {
-        var deepest = msgContainer.children[0] as Element;
-        for (var dl = 1; dl < msgContainer.children.length; dl++) {
-          if (msgContainer.children[dl].children.length > deepest.children.length) {
-            deepest = msgContainer.children[dl] as Element;
-          }
-        }
-        if (deepest.children.length <= msgContainer.children.length) break;
-        msgContainer = deepest;
-        drillAttempts++;
-      }
+        var cleanedText = rawText.replace(/\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*$/i, '').trim();
+        cleanedText = cleanedText.replace(/^\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*/i, '').trim();
+        if (cleanedText.length < 5) continue;
 
-      // ===== STRATEGY 2: Walk the container's children =====
-      if (msgContainer.children.length > 0) {
-        for (var wi = 0; wi < msgContainer.children.length; wi++) {
-          var msgEl = msgContainer.children[wi];
-          var rawText = (msgEl.textContent || '').trim();
-          if (rawText.length < 5) continue;
+        var dedupKey = cleanedText.substring(0, 200);
+        if (seenKeys[dedupKey]) continue;
+        seenKeys[dedupKey] = true;
 
-          // Clean text: strip trailing relative timestamps like "19 hours ago" or "3 minutes ago"
-          var cleanedText = rawText.replace(/\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*$/i, '').trim();
-          // Also strip leading relative timestamps
-          cleanedText = cleanedText.replace(/^\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*/i, '').trim();
+        var relTimeMatch = rawText.match(/(\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago)/i);
+        var relTimestamp = relTimeMatch ? relTimeMatch[1] : null;
+        var isoMatch = rawText.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/);
+        var timestamp = isoMatch ? isoMatch[1] : relTimestamp;
 
-          if (cleanedText.length < 5) continue;
+        var evClass = (evEl.getAttribute('class') || '').toLowerCase();
+        var evEventType = (evEl.getAttribute('data-event-type') || '').toLowerCase();
+        var evCy = (evEl.getAttribute('data-cy') || '').toLowerCase();
 
-          // Extract relative timestamp if present
-          var relTimeMatch = rawText.match(/(\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago)/i);
-          var relTimestamp = relTimeMatch ? relTimeMatch[1] : null;
+        // Also check descendant attributes for classification
+        var innerUserMarker = evEl.querySelector('[data-cy="user-message"], [data-event-type="user-message"], [class*="userMessage"], [class*="UserMessage"]');
+        var innerCheckpointMarker = evEl.querySelector('[class*="checkpoint"], [class*="Checkpoint"], [data-event-type*="checkpoint"]');
 
-          // Extract any ISO timestamp
-          var isoMatch2 = rawText.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/);
-          var timestamp2 = isoMatch2 ? isoMatch2[1] : relTimestamp;
+        var isCheckpoint = evClass.indexOf('checkpoint') >= 0 ||
+          evEventType.indexOf('checkpoint') >= 0 ||
+          innerCheckpointMarker !== null ||
+          (cleanedText.indexOf('Checkpoint') >= 0 && cleanedText.length < 500);
 
-          // Check class names and attributes for classification
-          var elClass = (msgEl.className || '').toLowerCase();
-          var elTestId = (msgEl.getAttribute('data-testid') || '').toLowerCase();
-          var elRole = (msgEl.getAttribute('role') || '').toLowerCase();
-
-          // Walk up to 3 levels of children to find classification hints
-          var innerClasses = '';
-          var innerEls = msgEl.querySelectorAll('*');
-          for (var ii = 0; ii < Math.min(innerEls.length, 50); ii++) {
-            innerClasses += ' ' + (innerEls[ii].className || '').toLowerCase();
-          }
-          var allClasses = elClass + ' ' + innerClasses;
-
-          // Detect checkpoint
-          var isCheckpoint = allClasses.indexOf('checkpoint') >= 0 ||
-            elTestId.indexOf('checkpoint') >= 0 ||
-            (cleanedText.indexOf('Checkpoint') >= 0 && cleanedText.length < 500);
-
-          if (isCheckpoint) {
-            var costMatch3 = cleanedText.match(/\$[\d.]+/);
-            checkpoints.push({
-              timestamp: timestamp2,
-              description: cleanedText.substring(0, 1000),
-              cost: costMatch3 ? costMatch3[0] : null,
-              durationSeconds: null,
-              index: index++
-            });
-            continue;
-          }
-
-          // Classify user vs agent
-          var isUser2 = allClasses.indexOf('user') >= 0 ||
-            elTestId.indexOf('user') >= 0 ||
-            allClasses.indexOf('human') >= 0;
-
-          var isAgent2 = allClasses.indexOf('agent') >= 0 ||
-            allClasses.indexOf('assistant') >= 0 ||
-            allClasses.indexOf('bot') >= 0 ||
-            allClasses.indexOf('ai-') >= 0 ||
-            allClasses.indexOf('response') >= 0 ||
-            elTestId.indexOf('agent') >= 0 ||
-            elTestId.indexOf('assistant') >= 0;
-
-          // If neither detected, try content heuristics
-          var msgType = 'agent';
-          if (isUser2 && !isAgent2) {
-            msgType = 'user';
-          } else if (isAgent2 && !isUser2) {
-            msgType = 'agent';
-          }
-          // If both or neither detected, default to agent (since user messages are reliably detected)
-
-          messages.push({
-            type: msgType,
-            content: cleanedText.substring(0, 10000),
-            timestamp: timestamp2,
+        if (isCheckpoint) {
+          var costMatch = cleanedText.match(/\$[\d.]+/);
+          checkpoints.push({
+            timestamp: timestamp,
+            description: cleanedText.substring(0, 1000),
+            cost: costMatch ? costMatch[0] : null,
+            durationSeconds: null,
             index: index++
           });
+          continue;
         }
+
+        var isUser = evClass.indexOf('usermessage') >= 0 ||
+          evClass.indexOf('user-message') >= 0 ||
+          evEventType === 'user-message' ||
+          evCy === 'user-message' ||
+          innerUserMarker !== null;
+
+        var msgType = isUser ? 'user' : 'agent';
+
+        messages.push({
+          type: msgType,
+          content: cleanedText.substring(0, 10000),
+          timestamp: timestamp,
+          index: index++
+        });
       }
 
-      // ===== STRATEGY 3: If container approach found few/no messages, try selector-based =====
+      // ===== FALLBACK STRATEGY: Use broader Message selectors =====
       if (messages.length < 3) {
-        // Broad selectors for any message-like elements
         var broadSelectors = [
+          '[data-cy*="message"]',
+          '[data-event-type*="message"]',
+          '[class*="Message"][class*="module"]',
           '[data-testid*="message"]',
           '[data-testid*="chat"]',
-          '[data-testid*="turn"]',
-          '[class*="Message"]',
-          '[class*="ChatMessage"]',
-          '[class*="UserMessage"]',
-          '[class*="AgentMessage"]',
-          '[class*="AssistantMessage"]',
-          '[class*="Turn"]',
           '[role="listitem"]',
           '[role="article"]'
         ];
 
         var selectorStr = broadSelectors.join(', ');
         var selectorEls = document.querySelectorAll(selectorStr);
-        var seenTexts = {};
-        
-        // Also mark texts from strategy 2 as seen
-        for (var si = 0; si < messages.length; si++) {
-          seenTexts[messages[si].content.substring(0, 100)] = true;
-        }
 
         for (var bi = 0; bi < selectorEls.length; bi++) {
           var bEl = selectorEls[bi];
           var bRaw = (bEl.textContent || '').trim();
-          
-          // Clean relative timestamps
+
           var bClean = bRaw.replace(/\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*$/i, '').trim();
           bClean = bClean.replace(/^\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*/i, '').trim();
-          
           if (bClean.length < 5) continue;
 
-          // Skip if we already have this text (dedup)
-          var bKey = bClean.substring(0, 100);
-          if (seenTexts[bKey]) continue;
-          seenTexts[bKey] = true;
-
-          // Skip if this text is a substring of an already captured message
-          var isDupe = false;
-          for (var di = 0; di < messages.length; di++) {
-            if (messages[di].content.indexOf(bClean) >= 0 || bClean.indexOf(messages[di].content) >= 0) {
-              isDupe = true;
-              break;
-            }
-          }
-          if (isDupe) continue;
+          var bKey = bClean.substring(0, 200);
+          if (seenKeys[bKey]) continue;
+          seenKeys[bKey] = true;
 
           var bRelTime = bRaw.match(/(\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago)/i);
           var bTimestamp = bRelTime ? bRelTime[1] : null;
           var bIso = bRaw.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/);
           if (bIso) bTimestamp = bIso[1];
 
-          var bClass = (bEl.className || '').toLowerCase();
-          var bTestId = (bEl.getAttribute('data-testid') || '').toLowerCase();
-          var bInner = '';
-          var bInnerEls = bEl.querySelectorAll('*');
-          for (var bii = 0; bii < Math.min(bInnerEls.length, 30); bii++) {
-            bInner += ' ' + (bInnerEls[bii].className || '').toLowerCase();
-          }
-          var bAllClasses = bClass + ' ' + bInner;
+          var bClass = (bEl.getAttribute('class') || '').toLowerCase();
+          var bCy = (bEl.getAttribute('data-cy') || '').toLowerCase();
+          var bEvType = (bEl.getAttribute('data-event-type') || '').toLowerCase();
 
-          var bIsUser = bAllClasses.indexOf('user') >= 0 || bTestId.indexOf('user') >= 0 || bAllClasses.indexOf('human') >= 0;
-          var bIsAgent = bAllClasses.indexOf('agent') >= 0 || bAllClasses.indexOf('assistant') >= 0 || bAllClasses.indexOf('bot') >= 0;
+          var bUserMarker = bEl.querySelector('[data-cy="user-message"], [data-event-type="user-message"], [class*="userMessage"], [class*="UserMessage"]');
 
-          var bType = 'agent';
-          if (bIsUser && !bIsAgent) bType = 'user';
-          else if (bIsAgent && !bIsUser) bType = 'agent';
+          var bIsUser = bClass.indexOf('usermessage') >= 0 ||
+            bClass.indexOf('user-message') >= 0 ||
+            bCy.indexOf('user') >= 0 ||
+            bEvType === 'user-message' ||
+            bUserMarker !== null;
+
+          var bType = bIsUser ? 'user' : 'agent';
 
           messages.push({
             type: bType,
@@ -857,20 +775,17 @@ export class ReplitScraper {
       }
 
       // ===== DEDUPLICATION PASS =====
-      // Remove messages where the cleaned text is a substring of another message
-      var deduped = [] as any[]; // dedup pass
+      var deduped = [] as any[];
       for (var d1 = 0; d1 < messages.length; d1++) {
         var isDuplicate = false;
         var m1 = messages[d1].content;
         for (var d2 = 0; d2 < messages.length; d2++) {
           if (d1 === d2) continue;
           var m2 = messages[d2].content;
-          // If m1 is a strict substring of m2, skip m1 (keep the longer version)
           if (m2.length > m1.length && m2.indexOf(m1) >= 0) {
             isDuplicate = true;
             break;
           }
-          // If same content, keep the first occurrence
           if (m1 === m2 && d1 > d2) {
             isDuplicate = true;
             break;
@@ -881,13 +796,11 @@ export class ReplitScraper {
         }
       }
 
-      // Re-index after dedup
       for (var ri = 0; ri < deduped.length; ri++) {
         deduped[ri].index = ri;
       }
 
       // ===== CHECKPOINT DETECTION FROM FULL PAGE =====
-      // Look for cost patterns near checkpoint-like text anywhere on the page
       var bodyText = document.body.innerText || '';
       var cpRegex = /(?:checkpoint|saved|deployed|created)[^$\n]{0,100}\$(\d+\.?\d*)/gi;
       var cpMatch;
