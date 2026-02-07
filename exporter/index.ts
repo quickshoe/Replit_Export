@@ -125,7 +125,7 @@ async function main() {
       console.log(`\n[${i + 1}/${urls.length}] Processing: ${url}`);
       
       try {
-        const data = await scraper.scrapeRepl(url);
+        const data = await scraper.scrapeRepl(url, outputDir);
         exports.push(data);
 
         // Save individual JSON
