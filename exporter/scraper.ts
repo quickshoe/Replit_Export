@@ -24,16 +24,13 @@ export class ReplitScraper {
   private browser: Browser | null = null;
   private context: BrowserContext | null = null;
   private verbose: boolean = false;
-  private headless: boolean = false;
 
   setVerbose(v: boolean): void { this.verbose = v; }
 
-  async init(options?: { headless?: boolean }): Promise<void> {
-    this.headless = options?.headless ?? false;
-    const mode = this.headless ? 'headless' : 'headed';
-    console.log(`Launching browser (${mode})...`);
+  async init(): Promise<void> {
+    console.log('Launching browser...');
     this.browser = await chromium.launch({
-      headless: this.headless,
+      headless: false,
     });
 
     if (fs.existsSync(SESSION_FILE)) {
@@ -51,15 +48,22 @@ export class ReplitScraper {
     }
   }
 
-  async reinitHeadless(): Promise<void> {
-    if (this.headless) return;
-    console.log('Switching to headless mode for extraction...');
-    await this.close();
-    await this.init({ headless: true });
-  }
-
-  isHeadless(): boolean {
-    return this.headless;
+  async minimizeWindow(): Promise<void> {
+    if (!this.context) return;
+    try {
+      const pages = this.context.pages();
+      if (pages.length > 0) {
+        const cdp = await pages[0].context().newCDPSession(pages[0]);
+        const { windowId } = await cdp.send('Browser.getWindowForTarget');
+        await cdp.send('Browser.setWindowBounds', {
+          windowId,
+          bounds: { windowState: 'minimized' },
+        });
+        await cdp.detach();
+      }
+    } catch {
+      // Minimize is best-effort; some environments may not support it
+    }
   }
 
   async waitForLogin(page?: Page): Promise<void> {
@@ -856,12 +860,12 @@ export class ReplitScraper {
       var absoluteDatePattern = /(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d{1,2},?\s+\d{4}/i;
       var absoluteNumericDatePattern = /\d{1,2}\/\d{1,2}\/\d{2,4}/;
 
-      function isAbsolute(text: string): boolean {
+      var isAbsolute = function(text) {
         return absoluteTimePattern.test(text) || absoluteDatePattern.test(text) || absoluteNumericDatePattern.test(text);
-      }
-      function isRelative(text: string): boolean {
+      };
+      var isRelative = function(text) {
         return relativePattern.test(text) || justNowPattern.test(text);
-      }
+      };
 
       // Step 1: Find commit container elements (not message sub-elements)
       // Use container-level selectors first
@@ -1053,9 +1057,9 @@ export class ReplitScraper {
       var absoluteDatePattern = /(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d{1,2},?\s+\d{4}/i;
       var absoluteNumericDatePattern = /\d{1,2}\/\d{1,2}\/\d{2,4}/;
 
-      function isAbsoluteV(text: string): boolean {
+      var isAbsoluteV = function(text) {
         return absoluteTimePattern.test(text) || absoluteDatePattern.test(text) || absoluteNumericDatePattern.test(text);
-      }
+      };
 
       var commitContainers = document.querySelectorAll(
         '[class*="CommitList"] li, [data-testid*="commit"], ' +
