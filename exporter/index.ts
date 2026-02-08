@@ -146,10 +146,10 @@ async function main() {
 
     console.log(`
 ╔══════════════════════════════════════════════════════════════╗
-║                     Export Complete!                         ║
+║                      Export Complete!                        ║
 ╠══════════════════════════════════════════════════════════════╣
-║  Processed: ${String(exports.length).padEnd(3)} repl(s)                                    ║
-║  Output:    ${outputDir.padEnd(45)}║
+║${('  Processed: ' + String(exports.length).padEnd(3) + ' repl(s)').padEnd(60)}  ║
+║${('  Output:    ' + outputDir).padEnd(60)}  ║
 ║                                                              ║
 ║  Files created:                                              ║
 ║    {replName}.json         - Full export per repl            ║

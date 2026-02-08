@@ -1029,112 +1029,116 @@ export class ReplitScraper {
           }
 
           // Extract individual charge line items from expanded Agent Usage section
+          // KEY: Only capture items BELOW the "Agent Usage" heading, not above it
           var chargeDetails = [] as any[];
           var searchRoot = endOfRunRoot || evEl;
 
-          // Strategy 1: Scan all child elements for $ amounts paired with labels
-          // The DOM typically renders label text in one element and $X.XX in another
+          // Step 1: Find the "Agent Usage" heading element in the DOM
+          var agentUsageHeading = null as any;
           var allChildEls = searchRoot.querySelectorAll('*');
-          var labelCandidates = [] as any[];
-          var amountCandidates = [] as any[];
-
-          for (var ci = 0; ci < allChildEls.length; ci++) {
-            var childEl = allChildEls[ci];
-            // Only consider leaf-ish elements (no or few children for precision)
-            if (childEl.children.length > 3) continue;
-            var childText = (childEl.textContent || '').trim();
-            if (childText.length === 0) continue;
-
-            // Check if this is a dollar amount
-            var amtMatch = childText.match(/^\$([\d.]+)$/);
-            if (amtMatch) {
-              amountCandidates.push({
-                el: childEl,
-                amount: parseFloat(amtMatch[1]),
-                text: childText,
-                rect: childEl.getBoundingClientRect()
-              });
-              continue;
-            }
-
-            // Check if this could be a label (short text, no dollar sign)
-            if (childText.length > 2 && childText.length < 150 && childText.indexOf('$') < 0) {
-              // Skip structural/noise labels
-              var lowerText = childText.toLowerCase();
-              if (lowerText === 'agent usage' ||
-                  lowerText.indexOf('worked for') >= 0 ||
-                  lowerText.indexOf('time worked') >= 0 ||
-                  lowerText.indexOf('work done') >= 0 ||
-                  lowerText.indexOf('items read') >= 0 ||
-                  lowerText.indexOf('code changed') >= 0 ||
-                  lowerText.indexOf('checkpoint') >= 0 ||
-                  lowerText.indexOf('rollback') >= 0 ||
-                  lowerText.indexOf('preview') >= 0 ||
-                  lowerText.indexOf('changes') >= 0) continue;
-
-              labelCandidates.push({
-                el: childEl,
-                text: childText,
-                rect: childEl.getBoundingClientRect()
-              });
+          for (var hi = 0; hi < allChildEls.length; hi++) {
+            var hEl = allChildEls[hi];
+            var hText = (hEl.textContent || '').trim();
+            // Match "Agent Usage" with optional dollar amount like "Agent Usage" or just the heading
+            // The heading element is typically short and contains "Agent Usage"
+            if (hText.indexOf('Agent Usage') >= 0 && hText.length < 50) {
+              // Prefer the most specific (deepest) element that matches
+              agentUsageHeading = hEl;
             }
           }
 
-          // Strategy 2: Match labels to amounts by DOM proximity
-          // For each $amount, find the nearest preceding label
-          var usedLabels = {} as any;
-          for (var ami = 0; ami < amountCandidates.length; ami++) {
-            var amt = amountCandidates[ami];
-            // Skip if this is likely the total (first or only dollar amount)
-            // We want the detail items, not the summary total
+          if (agentUsageHeading) {
+            // Step 2: Only scan elements that come AFTER the Agent Usage heading
+            var labelCandidates = [] as any[];
+            var amountCandidates = [] as any[];
 
-            var bestLabel = null as any;
-            var bestDistance = 999999;
+            for (var ci = 0; ci < allChildEls.length; ci++) {
+              var childEl = allChildEls[ci];
+              // Check if this element comes AFTER the Agent Usage heading in DOM order
+              var headingPos = agentUsageHeading.compareDocumentPosition(childEl);
+              // headingPos & 4 means childEl follows agentUsageHeading
+              if (!(headingPos & 4)) continue;
 
-            // Walk backwards in DOM order to find the nearest label
-            for (var li = 0; li < labelCandidates.length; li++) {
-              var lbl = labelCandidates[li];
-              if (usedLabels[li]) continue;
+              // Only consider leaf-ish elements
+              if (childEl.children.length > 3) continue;
+              var childText = (childEl.textContent || '').trim();
+              if (childText.length === 0) continue;
 
-              // Check if this label appears before this amount in DOM order
-              var pos = lbl.el.compareDocumentPosition(amt.el);
-              // pos & 4 means amt.el follows lbl.el
-              if (pos & 4) {
-                // Calculate vertical distance
-                var vDist = Math.abs(amt.rect.top - lbl.rect.top);
-                if (vDist < bestDistance && vDist < 100) {
-                  bestDistance = vDist;
-                  bestLabel = { index: li, text: lbl.text };
+              // Check if this is a dollar amount
+              var amtMatch = childText.match(/^\$([\d.]+)$/);
+              if (amtMatch) {
+                amountCandidates.push({
+                  el: childEl,
+                  amount: parseFloat(amtMatch[1]),
+                  text: childText,
+                  rect: childEl.getBoundingClientRect()
+                });
+                continue;
+              }
+
+              // Check if this could be a label (short text, no dollar sign)
+              if (childText.length > 2 && childText.length < 150 && childText.indexOf('$') < 0) {
+                var lowerText = childText.toLowerCase();
+                // Skip the heading text itself or noise
+                if (lowerText === 'agent usage') continue;
+
+                labelCandidates.push({
+                  el: childEl,
+                  text: childText,
+                  rect: childEl.getBoundingClientRect()
+                });
+              }
+            }
+
+            // Step 3: Match labels to amounts by DOM proximity
+            var usedLabels = {} as any;
+            for (var ami = 0; ami < amountCandidates.length; ami++) {
+              var amt = amountCandidates[ami];
+
+              var bestLabel = null as any;
+              var bestDistance = 999999;
+
+              for (var li = 0; li < labelCandidates.length; li++) {
+                var lbl = labelCandidates[li];
+                if (usedLabels[li]) continue;
+
+                // Check if this label appears before this amount in DOM order
+                var pos = lbl.el.compareDocumentPosition(amt.el);
+                if (pos & 4) {
+                  var vDist = Math.abs(amt.rect.top - lbl.rect.top);
+                  if (vDist < bestDistance && vDist < 100) {
+                    bestDistance = vDist;
+                    bestLabel = { index: li, text: lbl.text };
+                  }
+                }
+              }
+
+              if (bestLabel) {
+                usedLabels[bestLabel.index] = true;
+                var cleanLabel = bestLabel.text.replace(/\s+/g, ' ').trim();
+                if (!isNaN(amt.amount) && amt.amount > 0) {
+                  chargeDetails.push({
+                    label: cleanLabel,
+                    amount: amt.amount
+                  });
                 }
               }
             }
 
-            if (bestLabel) {
-              usedLabels[bestLabel.index] = true;
-              var cleanLabel = bestLabel.text.replace(/\s+/g, ' ').trim();
-              if (!isNaN(amt.amount) && amt.amount > 0) {
-                chargeDetails.push({
-                  label: cleanLabel,
-                  amount: amt.amount
-                });
+            // Remove the total if it got captured (matches totalCharge)
+            if (chargeDetails.length > 1 && totalCharge !== null) {
+              var filtered = [] as any[];
+              var removedTotal = false;
+              for (var fi = 0; fi < chargeDetails.length; fi++) {
+                if (!removedTotal && Math.abs(chargeDetails[fi].amount - totalCharge) < 0.005) {
+                  removedTotal = true;
+                  continue;
+                }
+                filtered.push(chargeDetails[fi]);
               }
-            }
-          }
-
-          // If we got charge details, remove the total (usually the first or last item that matches the totalCharge)
-          if (chargeDetails.length > 1 && totalCharge !== null) {
-            // Remove any entry whose amount matches the total (it's a summary, not a line item)
-            var filtered = [] as any[];
-            var removedTotal = false;
-            for (var fi = 0; fi < chargeDetails.length; fi++) {
-              if (!removedTotal && Math.abs(chargeDetails[fi].amount - totalCharge) < 0.005) {
-                removedTotal = true;
-                continue;
+              if (filtered.length > 0) {
+                chargeDetails = filtered;
               }
-              filtered.push(chargeDetails[fi]);
-            }
-            if (filtered.length > 0) {
-              chargeDetails = filtered;
             }
           }
 

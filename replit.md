@@ -78,6 +78,9 @@ npx tsx exporter/index.ts --clear-session
 
 ## Recent Changes
 
+- 2026-02-08: Agent Usage extraction fix and terminal formatting:
+  - Agent Usage detail extraction now finds the "Agent Usage" heading element first, then only extracts $amounts and labels from DOM elements that appear AFTER that heading (uses compareDocumentPosition). This prevents capturing "Time worked", "Work done", "Items read", "Code changed" which appear ABOVE the heading.
+  - Terminal box formatting uses padEnd for consistent alignment regardless of number length
 - 2026-02-08: Timestamp, navigation, and detail extraction improvements:
   - Navigation uses domcontentloaded instead of networkidle (eliminates 60s timeout)
   - Comprehensive timestamp finder: checks <time> elements, datetime attributes, parent/sibling elements, timestamp CSS classes, real time patterns, and relative time text
