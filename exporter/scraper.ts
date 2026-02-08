@@ -309,6 +309,13 @@ export class ReplitScraper {
       console.log('  Note: Could not save DOM debug info');
     }
 
+    let gitCommits: GitCommit[] = [];
+    try {
+      gitCommits = await this.scrapeGitCommits(page);
+    } catch (err) {
+      console.log('  Note: Could not scrape Git commits:', (err as Error).message);
+    }
+
     try {
       const storageState = await this.context.storageState();
       fs.writeFileSync(SESSION_FILE, JSON.stringify(storageState, null, 2));
@@ -325,12 +332,14 @@ export class ReplitScraper {
       messages,
       checkpoints,
       workEntries,
+      gitCommits,
     };
 
     console.log(`\n  Results summary:`);
     console.log(`    Messages: ${messages.length} (${messages.filter(m => m.type === 'user').length} user, ${messages.filter(m => m.type === 'agent').length} agent)`);
     console.log(`    Checkpoints: ${checkpoints.length}`);
     console.log(`    Work entries: ${workEntries.length}`);
+    console.log(`    Git commits: ${gitCommits.length}`);
     const withTimestamp = [...messages, ...workEntries, ...checkpoints].filter((e: any) => e.timestamp).length;
     const total = messages.length + workEntries.length + checkpoints.length;
     console.log(`    Items with timestamps: ${withTimestamp}/${total}`);
