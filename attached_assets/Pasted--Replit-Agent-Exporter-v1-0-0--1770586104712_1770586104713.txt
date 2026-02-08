@@ -1,0 +1,110 @@
+╔═══════════════════════════════════════════════════════════════╗
+║  Replit Agent Exporter v1.0.0                                 ║
+║                                                               ║
+║  This tool exports chat history and checkpoints from          ║
+║  Replit Agent sessions to JSON and CSV files.                 ║
+║                                                               ║
+║  Security: Your password is never stored. Only browser        ║
+║  session cookies are saved locally for convenience.           ║
+║  Delete ./playwright-session.json to clear the session.       ║
+╚═══════════════════════════════════════════════════════════════╝
+
+Launching browser...
+Found existing session, attempting to restore...
+Session restored successfully.
+Already logged in (using saved session).
+Minimizing browser window (use --verbose to keep it visible)...
+
+========================================
+Enter Replit App URLs or Repl IDs
+(one per line, empty line to finish):
+========================================
+
+> https://replit.com/t/quickshoe-llc/repls/Replit-Export-Tool
+> 
+
+Processing 1 repl(s)...
+
+
+[1/1] Processing: https://replit.com/t/quickshoe-llc/repls/Replit-Export-Tool
+
+Scraping: Replit-Export-Tool
+Navigating to: https://replit.com/t/quickshoe-llc/repls/Replit-Export-Tool
+Page DOM loaded successfully.
+Waiting for page to settle...
+
+Pre-check: Checking if Replit Agent is currently working...
+  Detection: No stop button detected (chat form NOT found) — assuming idle
+  Replit Agent is idle. Proceeding with scraping.
+
+========================================
+IMPORTANT: Do NOT use Replit Agent while the scraper is running.
+Agent activity during scraping will cause unreliable results.
+========================================
+
+Chat container found: none (will use fallback scrolling)
+Step 1: Scrolling to load full chat history...
+Loaded 15 new messages... waiting for new messages...
+Reached time limit for loading history (60s)
+
+Step 1b: Expanding targeted sections (messages & actions, checkpoints, worked for)...
+  Expanded 168 collapsed sections
+
+Step 2: Scraping Git tab for commit history...
+  Attempting to open Git panel...
+  Strategy 1 (text/aria match): clicked Git element
+    Matched: {"strategy":"text/aria match","tag":"DIV","text":"git","ariaLabel":"","title":"","testId":"","className":" useView-module__etopAW__view useView-module__etopAW__isHorizontal _sdz_surface-bg Tab-module__U4Wks"}
+  Git panel verified open.
+  Scrolled Git tab (2 rounds, found ~0 commit elements)
+  Step 2b: Clicking a relative timestamp to convert all to absolute...
+  WARNING: Could not scrape Git commits: page.evaluate: ReferenceError: __name is not defined
+    at eval (eval at evaluate (:290:30), <anonymous>:1:359)
+    at UtilityScript.evaluate (<anonymous>:292:16)
+    at UtilityScript.<anonymous> (<anonymous>:1:44)
+  Timestamps may remain relative. Extraction will continue but some timestamps may be missing.
+
+Step 3: Navigating back to chat panel...
+  Clicked chat panel tab
+  Chat panel confirmed (1083 containers found)
+Step 4: Hovering over duration elements to capture precise tooltips...
+  Found 68 work entry containers to check for precise durations
+  Captured 28 precise duration tooltips via hover
+Step 5: Extracting all chat data...
+  Phase 3: Extracting data from 1083 containers...
+  Extracted from 1083 containers.
+  DOM debug saved: exports/dom-debug.json
+
+  Results summary:
+    Messages: 532 (45 user, 487 agent)
+    Checkpoints: 49
+    Work entries: 68
+    Git commits: 0
+    Items with timestamps: 640/649 (9 item(s) at start of conversation may lack timestamps)
+    Extraction time: 2m 44s
+  Saved: exports/Replit-Export-Tool - 20260208_13-17/Replit-Export-Tool.json
+  All events CSV: exports/Replit-Export-Tool - 20260208_13-17/all-events.csv
+  Chat CSV: exports/Replit-Export-Tool - 20260208_13-17/chat.csv
+  Chat Markdown: exports/Replit-Export-Tool - 20260208_13-17/chat.md
+  Work tracking CSV: exports/Replit-Export-Tool - 20260208_13-17/work-tracking.csv
+  Work summary CSV: exports/Replit-Export-Tool - 20260208_13-17/work-summary.csv
+
+Combined work summary saved: exports/20260208_13-17_work-summary.csv
+
+╔═══════════════════════════════════════════════════════════════╗
+║                      Export Complete!                         ║
+╠═══════════════════════════════════════════════════════════════╣
+║  Processed: 1   repl(s)                                       ║
+║  Output:    ./exports                                         ║
+║  Run:       20260208_13-17                                    ║
+║                                                               ║
+║  Per-URL directory: {ReplName} - 20260208_13-17               ║
+║    {replName}.json         - Full export per repl             ║
+║    all-events.csv          - All events (messages+more)       ║
+║    chat.csv                - Clean chat messages only         ║
+║    chat.md                 - Markdown chat history            ║
+║    work-tracking.csv       - Time, actions, cost breakdown    ║
+║    work-summary.csv        - Daily totals summary             ║
+║                                                               ║
+║  Main directory:                                              ║
+║    20260208_13-17_work-summary.csv - Combined summary         ║
+╚═══════════════════════════════════════════════════════════════╝
