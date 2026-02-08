@@ -255,6 +255,9 @@ export class ReplitScraper {
 
     await page.waitForTimeout(2000);
 
+    // === PRE-CHECK: Wait for Replit Agent to finish working ===
+    await this.waitForAgentIdle(page);
+
     // === STEP 1: Load full chat history and expand sections ===
     const chatContainer = await this.findChatContainer(page);
     console.log(`Chat container found: ${chatContainer || 'none (will use fallback scrolling)'}`);
