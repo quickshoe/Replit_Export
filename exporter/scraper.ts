@@ -758,14 +758,25 @@ export class ReplitScraper {
         }, { containerIdx: info.containerIdx, elIndex: info.elIndex });
 
         if (absoluteTs) {
-          await page.evaluate(function(args) {
+          var verified = await page.evaluate(function(args) {
             var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
-            if (args.idx < containers.length) {
-              containers[args.idx].setAttribute('data-resolved-timestamp', args.ts);
+            if (args.idx >= containers.length) return false;
+            var el = containers[args.idx];
+            var tsModuleEls = el.querySelectorAll('[class*="Timestamp-module"], [class*="timestamp-module"]');
+            for (var vi = 0; vi < tsModuleEls.length; vi++) {
+              var vText = (tsModuleEls[vi].textContent || '').trim();
+              if (vText === args.originalText) {
+                containers[args.idx].setAttribute('data-resolved-timestamp', args.ts);
+                return true;
+              }
             }
-          }, { idx: info.containerIdx, ts: absoluteTs });
-          console.log(`  [Hover TS] Container ${info.containerIdx}: "${info.text}" -> "${absoluteTs}"`);
-          resolved++;
+            return false;
+          }, { idx: info.containerIdx, ts: absoluteTs, originalText: info.text });
+
+          if (verified) {
+            console.log(`  [Hover TS] Container ${info.containerIdx}: "${info.text}" -> "${absoluteTs}"`);
+            resolved++;
+          }
         }
 
         await page.mouse.move(0, 0);
@@ -999,8 +1010,11 @@ export class ReplitScraper {
         for (var tmi = 0; tmi < tsModuleEls.length; tmi++) {
           var tmText = (tsModuleEls[tmi].textContent || '').trim();
           if (tmText.length > 0 && tmText.length < 100) {
-            timestamp = tmText;
-            break;
+            var isRelative = /^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i.test(tmText);
+            if (!isRelative) {
+              timestamp = tmText;
+              break;
+            }
           }
         }
       }
