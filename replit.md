@@ -27,7 +27,8 @@ The tool is implemented as a Node.js CLI application, leveraging Playwright for 
 - **Browser Automation:** Playwright opens a Chromium browser for manual user login and saves session cookies for persistence.
 - **Data Scraping:** The scraper navigates to specified Replit URLs, auto-scrolls to load full chat history, and sequentially processes DOM elements.
 - **Sequential Top-Down Walk:** The scraping process involves a "sequential top-down walk" where each DOM element is processed one at a time. This includes toggling relative timestamps to absolute, expanding collapsed sections (work summaries, agent usage, checkpoints), and immediately extracting structured data from each element before proceeding to the next.
-- **Robust Extraction:** It employs fallback selectors for data extraction if primary methods yield insufficient results.
+- **Robust Extraction:** Fallback selectors run only when the primary walk yields zero results. Work entries are deduplicated using composite keys (timestamp + duration + fee + actions + lines).
+- **Precise Duration:** Extracts tooltip/title attributes on duration elements to capture precise times (e.g., "6 minutes 30 seconds") instead of truncated display text ("6 minutes").
 - **Output Generation:** Exports data into multiple formats:
     - **JSON:** Individual `.json` file per repl, containing structured work entries.
     - **CSV:** `all-events.csv` (combined messages, checkpoints, work entries), `chat.csv` (clean chat messages only), `work-tracking.csv` (structured work data), and `agent-usage-details.csv` (individual charge line items).

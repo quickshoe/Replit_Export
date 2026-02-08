@@ -516,6 +516,30 @@ export class ReplitScraper {
 
       if (endOfRunRoot || workedMatch) {
         var wDuration = workedMatch ? workedMatch[1] : '';
+
+        var preciseDuration = null as any;
+        var searchEls = (endOfRunRoot || el).querySelectorAll('*');
+        for (var tdi = 0; tdi < searchEls.length; tdi++) {
+          var tdEl = searchEls[tdi];
+          var tdText = (tdEl.textContent || '').trim();
+          var tdHasWorked = tdText.indexOf('Worked') >= 0 || tdText.indexOf('minute') >= 0 || tdText.indexOf('second') >= 0 || tdText.indexOf('hour') >= 0;
+          if (!tdHasWorked) continue;
+
+          var tdTitle = tdEl.getAttribute('title') || '';
+          var tdAria = tdEl.getAttribute('aria-label') || '';
+          var tdTooltip = tdTitle || tdAria;
+          if (tdTooltip && /\d+\s*(second|minute|hour|day|week|month|year)s?/i.test(tdTooltip) && tdTooltip.length < 100) {
+            var tdClean = tdTooltip.replace(/^Worked\s+for\s+/i, '').trim();
+            if (tdClean.length > 0 && /\d+\s*(second|minute|hour|day|week|month|year)s?/i.test(tdClean)) {
+              preciseDuration = tdClean;
+              break;
+            }
+          }
+        }
+        if (preciseDuration) {
+          wDuration = preciseDuration;
+        }
+
         var wDurationSecs = 0;
         if (wDuration) {
           var durParts = wDuration.match(/(\d+)\s*(second|minute|hour|day|week|month|year)s?/gi);
@@ -978,6 +1002,11 @@ export class ReplitScraper {
           if (!data) continue;
         }
 
+        // Deduplicate work entries by composite key
+        var weKey = 'WE|' + (data.timestamp || 'noTs') + '|' + (data.timeWorked || '') + '|' + (data.durationSeconds || 0) + '|' + (data.agentUsage != null ? data.agentUsage : 'noFee') + '|' + (data.workDoneActions != null ? data.workDoneActions : '') + '|' + (data.itemsReadLines != null ? data.itemsReadLines : '');
+        if (seenKeys[weKey]) continue;
+        seenKeys[weKey] = true;
+
         workEntries.push({
           timestamp: data.timestamp,
           timeWorked: data.timeWorked || '',
@@ -1039,13 +1068,10 @@ export class ReplitScraper {
       deduped[ri].index = ri;
     }
 
-    // If primary strategy found very few messages, try fallback
-    if (deduped.length < 3) {
-      console.log('  Few messages found, trying fallback extraction...');
-      var fallback = await this.fallbackExtract(page);
-      if (fallback.messages.length > deduped.length) {
-        return fallback;
-      }
+    // If primary walk found nothing at all, try fallback
+    if (deduped.length === 0 && checkpoints.length === 0 && workEntries.length === 0) {
+      console.log('  Primary walk found no results, trying fallback extraction...');
+      return this.fallbackExtract(page);
     }
 
     return { messages: deduped, checkpoints, workEntries };
