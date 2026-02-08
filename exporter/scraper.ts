@@ -628,6 +628,34 @@ export class ReplitScraper {
   }
 
   private async clickOneRelativeTimestamp(page: Page): Promise<boolean> {
+    // First check: are timestamps already absolute? (e.g. from a previous session)
+    var preCheck = await page.evaluate(function() {
+      var timeEls = document.querySelectorAll('time, [class*="time" i], [class*="date" i], [class*="ago" i], [class*="Timestamp"]');
+      var relativeCount = 0;
+      var absoluteCount = 0;
+      for (var i = 0; i < timeEls.length; i++) {
+        var text = (timeEls[i].textContent || '').trim();
+        if (/^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i.test(text) || /^just\s+now$/i.test(text)) {
+          relativeCount++;
+        } else if (text.length > 3) {
+          absoluteCount++;
+        }
+      }
+      return { relativeCount: relativeCount, absoluteCount: absoluteCount };
+    });
+
+    if (preCheck.relativeCount === 0 && preCheck.absoluteCount > 0) {
+      console.log(`  Timestamps already absolute (${preCheck.absoluteCount} found). No click needed.`);
+      return true;
+    }
+
+    if (preCheck.relativeCount === 0 && preCheck.absoluteCount === 0) {
+      console.log('  No timestamp elements found in Git tab.');
+      return false;
+    }
+
+    console.log(`  Found ${preCheck.relativeCount} relative, ${preCheck.absoluteCount} absolute timestamps. Clicking to convert...`);
+
     var clicked = await page.evaluate(function() {
       var timeEls = document.querySelectorAll('time, [class*="time" i], [class*="date" i], [class*="ago" i], [class*="Timestamp"]');
       for (var i = 0; i < timeEls.length; i++) {
