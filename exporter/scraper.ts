@@ -2,7 +2,7 @@ import { chromium, Browser, BrowserContext, Page } from 'playwright';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { ChatMessage, Checkpoint, WorkEntry, GitCommit, ReplExport } from './types';
-import { calculateDuration, extractReplName } from './utils';
+import { calculateDuration, extractReplName, parseTimestamp } from './utils';
 
 const SESSION_FILE = './playwright-session.json';
 
@@ -32,20 +32,30 @@ export class ReplitScraper {
     console.log('Launching browser...');
     this.browser = await chromium.launch({
       headless: false,
+      args: [
+        '--window-size=1440,900',
+        '--no-first-run',
+        '--no-default-browser-check',
+      ],
     });
+
+    const contextOptions: any = {
+      viewport: { width: 1440, height: 900 },
+    };
 
     if (fs.existsSync(SESSION_FILE)) {
       console.log('Found existing session, attempting to restore...');
       try {
         const storageState = JSON.parse(fs.readFileSync(SESSION_FILE, 'utf-8'));
-        this.context = await this.browser.newContext({ storageState });
+        contextOptions.storageState = storageState;
+        this.context = await this.browser.newContext(contextOptions);
         console.log('Session restored successfully.');
       } catch (err) {
         console.log('Failed to restore session, creating new context.');
-        this.context = await this.browser.newContext();
+        this.context = await this.browser.newContext(contextOptions);
       }
     } else {
-      this.context = await this.browser.newContext();
+      this.context = await this.browser.newContext(contextOptions);
     }
 
     this.page = await this.context.newPage();
@@ -922,6 +932,35 @@ export class ReplitScraper {
       console.log('  Git panel verified open.');
     }
 
+    // Always try to switch to "Commits" sub-tab (even if git panel is already open,
+    // we might be on the "Changes" tab instead of "Commits")
+    var switchedToCommits = await page.evaluate(function() {
+      var candidates = document.querySelectorAll('button, a, [role="tab"], [role="button"], span');
+      for (var i = 0; i < candidates.length; i++) {
+        var text = (candidates[i].textContent || '').trim().toLowerCase();
+        var el = candidates[i];
+        if (text === 'commits' || text === 'commit history' || text === 'all commits') {
+          var isClickable = el.tagName === 'BUTTON' || el.tagName === 'A' ||
+            el.getAttribute('role') === 'tab' || el.getAttribute('role') === 'button' ||
+            el.getAttribute('tabindex') !== null ||
+            (el.parentElement && (el.parentElement.tagName === 'BUTTON' || el.parentElement.getAttribute('role') === 'tab'));
+          if (isClickable) {
+            el.click();
+            return true;
+          }
+          if (el.parentElement) {
+            el.parentElement.click();
+            return true;
+          }
+        }
+      }
+      return false;
+    });
+    if (switchedToCommits) {
+      console.log('  Clicked "Commits" sub-tab to ensure commit list is visible');
+      await page.waitForTimeout(2000);
+    }
+
     // Scroll to load all commits
     var scrollAttempts = 0;
     var maxScrollAttempts = 30;
@@ -1208,7 +1247,7 @@ export class ReplitScraper {
           var dtAttr = timeEl.getAttribute('datetime') || '';
           if (dtAttr) {
             timestamp = dtAttr;
-          } else if (timeText && !/^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i.test(timeText)) {
+          } else if (timeText && timeText.length > 0 && timeText.length < 100) {
             timestamp = timeText;
           }
         }
@@ -1218,6 +1257,14 @@ export class ReplitScraper {
           var absMatch = allText.match(/(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})/i);
           if (absMatch) {
             timestamp = absMatch[1].trim();
+          }
+        }
+
+        if (!timestamp) {
+          var allText2 = (el.textContent || '');
+          var relMatch = allText2.match(/(\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago)/i);
+          if (relMatch) {
+            timestamp = relMatch[1].trim();
           }
         }
 
@@ -2637,7 +2684,17 @@ export class ReplitScraper {
       var data = await this.extractElementData(page, i, lastTimestamp);
       if (!data) continue;
 
-      if (data.timestamp) lastTimestamp = data.timestamp;
+      if (data.timestamp) {
+        if (!lastTimestamp) {
+          lastTimestamp = data.timestamp;
+        } else {
+          var curParsed = parseTimestamp(lastTimestamp);
+          var newParsed = parseTimestamp(data.timestamp);
+          if (newParsed && curParsed && newParsed.getTime() >= curParsed.getTime()) {
+            lastTimestamp = data.timestamp;
+          }
+        }
+      }
 
       if (data.entryType === 'work') {
         var weKey = 'WE|' + (data.timestamp || 'noTs') + '|' + (data.timeWorked || '') + '|' + (data.durationSeconds || 0) + '|' + (data.agentUsage != null ? data.agentUsage : 'noFee') + '|' + (data.workDoneActions != null ? data.workDoneActions : '') + '|' + (data.itemsReadLines != null ? data.itemsReadLines : '');
@@ -2774,6 +2831,30 @@ export class ReplitScraper {
 
     for (var si = 0; si < allEntries.length; si++) {
       allEntries[si].index = si;
+    }
+
+    var repairCount = 0;
+    var highWaterTs: string | null = null;
+    var highWaterDate: Date | null = null;
+    for (var ri = 0; ri < allEntries.length; ri++) {
+      var rEntry = allEntries[ri];
+      if (!rEntry.timestamp) continue;
+      var rDate = parseTimestamp(rEntry.timestamp);
+      if (!rDate) continue;
+
+      if (!highWaterDate) {
+        highWaterTs = rEntry.timestamp;
+        highWaterDate = rDate;
+      } else if (rDate.getTime() < highWaterDate.getTime()) {
+        rEntry.timestamp = highWaterTs;
+        repairCount++;
+      } else {
+        highWaterTs = rEntry.timestamp;
+        highWaterDate = rDate;
+      }
+    }
+    if (repairCount > 0) {
+      console.log(`  Repaired ${repairCount} stale timestamps via monotonic forward-fill`);
     }
 
     deduped = [];

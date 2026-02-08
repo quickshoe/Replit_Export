@@ -182,7 +182,6 @@ export function exportAllEventsCsv(exports: ReplExport[], outputDir: string): st
     }
 
     for (const cp of exp.checkpoints) {
-      if (isBoilerplateDescription(cp.description || '')) continue;
       rows.push({
         index: cp.index,
         replName: exp.replName,
