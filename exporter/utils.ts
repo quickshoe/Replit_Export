@@ -227,11 +227,25 @@ export function exportChatCsv(exports: ReplExport[], outputDir: string): string 
 
 export function exportWorkTrackingCsv(exports: ReplExport[], outputDir: string): string {
   const rows: Record<string, any>[] = [];
+  const seenIndexes = new Set<string>();
+  let dupCount = 0;
   
   for (const exp of exports) {
     if (exp.workEntries && exp.workEntries.length > 0) {
       for (const we of exp.workEntries) {
+        const indexKey = exp.replName + '|' + we.index;
+        if (seenIndexes.has(indexKey)) {
+          dupCount++;
+          continue;
+        }
+        seenIndexes.add(indexKey);
+
+        const description = we.chargeDetails && we.chargeDetails.length > 0
+          ? we.chargeDetails.map(cd => cd.label).join('; ')
+          : '';
+
         rows.push({
+          index: we.index,
           replName: exp.replName,
           timestamp: we.timestamp || '',
           timeWorked: we.timeWorked || '',
@@ -240,12 +254,18 @@ export function exportWorkTrackingCsv(exports: ReplExport[], outputDir: string):
           codeChangedPlus: we.codeChangedPlus ?? '',
           codeChangedMinus: we.codeChangedMinus ?? '',
           agentUsage: we.agentUsage ?? '',
+          description: description,
         });
       }
     }
   }
+
+  if (dupCount > 0) {
+    console.log(`  [Dedup] Removed ${dupCount} duplicate work-tracking rows`);
+  }
   
   const columns = [
+    { key: 'index', label: 'Index' },
     { key: 'replName', label: 'Repl name' },
     { key: 'timestamp', label: 'Timestamp' },
     { key: 'timeWorked', label: 'Time worked' },
@@ -254,6 +274,7 @@ export function exportWorkTrackingCsv(exports: ReplExport[], outputDir: string):
     { key: 'codeChangedPlus', label: 'Code added' },
     { key: 'codeChangedMinus', label: 'Code removed' },
     { key: 'agentUsage', label: 'Agent usage fee' },
+    { key: 'description', label: 'Description' },
   ];
   const filePath = path.join(outputDir, 'work-tracking.csv');
   writeCsv(columns, rows, filePath);

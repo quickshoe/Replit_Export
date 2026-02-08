@@ -373,7 +373,6 @@ export class ReplitScraper {
         var ariaExp = btn.getAttribute('aria-expanded');
         if (ariaExp === 'true') continue;
         var text = (btn.textContent || '').trim();
-        if (text.indexOf('Agent Usage') >= 0) continue;
         if (text.indexOf('Rollback') >= 0) continue;
         if (text.indexOf('Preview') >= 0 && text.length < 30) continue;
         var rect = btn.getBoundingClientRect();
@@ -998,12 +997,72 @@ export class ReplitScraper {
         }
       }
 
-      // 3b: Expand Agent Usage before extraction so charge details are visible
-      await this.expandAgentUsageInElement(page, i);
-
-      // 3c: Extract data from this element
+      // 3b: Extract data from this element
       var data = await this.extractElementData(page, i, lastTimestamp);
       if (!data) continue;
+
+      // 3c: If timestamp is relative (e.g. "4 days ago"), try to click a timestamp
+      // toggle within this element and re-read the absolute timestamp
+      if (data.timestamp && /^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i.test(data.timestamp)) {
+        var didClickToggle = await page.evaluate(function(idx) {
+          var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
+          if (idx >= containers.length) return false;
+          var el = containers[idx];
+
+          var toggles = el.querySelectorAll('[class*="Timestamp-module"], [class*="timestamp-module"], [class*="TimestampToggle"], [class*="timestampToggle"]');
+          for (var ti = 0; ti < toggles.length; ti++) {
+            var tog = toggles[ti];
+            var togText = (tog.textContent || '').trim();
+            if (/^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i.test(togText)) {
+              var togRect = tog.getBoundingClientRect();
+              if (togRect.width > 0 && togRect.height > 0) {
+                if (tog['click']) tog['click']();
+                return true;
+              }
+            }
+          }
+          return false;
+        }, i);
+
+        if (didClickToggle) {
+        await page.waitForTimeout(300);
+
+        var rereadTs = await page.evaluate(function(idx) {
+          var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
+          if (idx >= containers.length) return null;
+          var el = containers[idx];
+
+          var relativePattern = /^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i;
+
+          var tsModuleEls = el.querySelectorAll('[class*="Timestamp-module"], [class*="timestamp-module"]');
+          for (var tmi = 0; tmi < tsModuleEls.length; tmi++) {
+            var tmText = (tsModuleEls[tmi].textContent || '').trim();
+            if (tmText.length > 0 && tmText.length < 100 && !relativePattern.test(tmText)) {
+              return tmText;
+            }
+          }
+
+          var timeEl = el.querySelector('time');
+          if (timeEl) {
+            var dt = timeEl.getAttribute('datetime');
+            if (dt) return dt;
+            var tt = (timeEl.textContent || '').trim();
+            if (tt.length > 0 && tt.length < 100 && !relativePattern.test(tt)) return tt;
+          }
+
+          var rawText = (el.textContent || '').trim();
+          var realTsMatch = rawText.match(/(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})/i);
+          if (realTsMatch) return realTsMatch[1];
+
+          return null;
+        }, i);
+
+        if (rereadTs) {
+          data.timestamp = rereadTs;
+          console.log('  [Timestamp fix] Converted relative timestamp to: ' + rereadTs);
+        }
+        }
+      }
 
       if (data.timestamp) lastTimestamp = data.timestamp;
 
