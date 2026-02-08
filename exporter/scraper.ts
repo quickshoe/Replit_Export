@@ -1269,13 +1269,16 @@ export class ReplitScraper {
           (cleanedText.indexOf('Checkpoint') >= 0 && cleanedText.length < 500);
 
         if (isCheckpoint) {
-          // Use the comprehensive timestamp finder first
-          var cpTimestamp = timestamp;
-
-          // Also try to find real timestamp in expanded content
+          // Priority 1: Real absolute timestamp from expanded checkpoint content
+          // e.g. "5:46 pm, Feb 07, 2026" shown after description text
+          var cpTimestamp = null as any;
           var realTimestampMatch = rawText.match(/(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})/i);
           if (realTimestampMatch) {
             cpTimestamp = realTimestampMatch[1];
+          }
+          // Priority 2: Fall back to pre-computed timestamp map only if no absolute timestamp found
+          if (!cpTimestamp) {
+            cpTimestamp = timestamp;
           }
 
           var cpDescription = '';
