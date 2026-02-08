@@ -598,32 +598,6 @@ export class ReplitScraper {
     return commits;
   }
 
-  private async toggleTimestamps(page: Page): Promise<number> {
-    var total = 0;
-    for (var round = 0; round < 3; round++) {
-      var toggled = await page.evaluate(function() {
-        var count = 0;
-        var tsEls = document.querySelectorAll('[class*="Timestamp-module"], [class*="timestamp-module"]');
-        for (var i = 0; i < tsEls.length; i++) {
-          var el = tsEls[i];
-          var role = el.getAttribute('role');
-          var checked = el.getAttribute('aria-checked');
-          if (role === 'switch' && (checked === 'false' || checked === null)) {
-            var rect = el.getBoundingClientRect();
-            if (rect.width > 0 && rect.height > 0) {
-              if (el['click']) el['click']();
-              count++;
-            }
-          }
-        }
-        return count;
-      });
-      total += toggled;
-      if (toggled === 0) break;
-      await page.waitForTimeout(800);
-    }
-    return total;
-  }
 
   private async expandTargetedSections(page: Page): Promise<number> {
     var totalClicked = await page.evaluate(function() {
@@ -1280,25 +1254,13 @@ export class ReplitScraper {
   }
 
   private async walkAndExtract(page: Page, _outputDir: string = './exports'): Promise<{ messages: ChatMessage[]; checkpoints: Checkpoint[]; workEntries: WorkEntry[] }> {
-    // ===== PHASE 1: Toggle timestamps to absolute format =====
-    console.log('  Phase 1: Toggling timestamps to absolute format...');
-    var tsToggled = await this.toggleTimestamps(page);
-    if (tsToggled > 0) {
-      console.log(`  Toggled ${tsToggled} timestamps to absolute format`);
-    }
-
-    // ===== PHASE 2: Targeted expansion =====
-    console.log('  Phase 2: Expanding targeted sections (messages & actions, checkpoints, worked for)...');
+    // ===== PHASE 1: Targeted expansion =====
+    console.log('  Phase 1: Expanding targeted sections (messages & actions, checkpoints, worked for)...');
     var expandedCount = await this.expandTargetedSections(page);
     console.log(`  Expanded ${expandedCount} collapsed sections`);
 
     if (expandedCount > 0) {
       await page.waitForTimeout(1500);
-
-      var tsToggledAfter = await this.toggleTimestamps(page);
-      if (tsToggledAfter > 0) {
-        console.log(`  Toggled ${tsToggledAfter} newly revealed timestamps`);
-      }
     }
 
     // ===== PHASE 2.5: Hover over duration elements to capture precise tooltips =====
