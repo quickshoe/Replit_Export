@@ -1279,17 +1279,32 @@ export class ReplitScraper {
           }
 
           var cpDescription = '';
-          var cpDescMatch = rawText.match(/Checkpoint\s+made[\s\S]*?ago\s*([\s\S]*?)(?:\d{1,2}:\d{2}\s*(?:am|pm)|\s*Rollback|\s*Preview|\s*Changes|$)/i);
-          if (cpDescMatch && cpDescMatch[1]) {
-            cpDescription = cpDescMatch[1].trim();
+          // Try matching with absolute timestamp format first (after toggle):
+          // "Checkpoint made  Saved progress...  5:46 pm, Feb 07, 2026  Rollback here..."
+          var cpDescMatchAbs = rawText.match(/Checkpoint\s+made\s*([\s\S]*?)(?:\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4}|\s*Rollback|\s*Preview|\s*Changes|$)/i);
+          if (cpDescMatchAbs && cpDescMatchAbs[1]) {
+            var descCandidate = cpDescMatchAbs[1].trim();
+            // Filter out if it only captured relative time like "4 days ago"
+            if (descCandidate && !descCandidate.match(/^\d+\s+(?:second|minute|hour|day|week|month|year)s?\s*ago\s*$/i)) {
+              cpDescription = descCandidate;
+            }
           }
+          // Fallback: try with relative timestamp "...ago" separator
+          if (!cpDescription) {
+            var cpDescMatchRel = rawText.match(/Checkpoint\s+made[\s\S]*?ago\s*([\s\S]*?)(?:\d{1,2}:\d{2}\s*(?:am|pm)|\s*Rollback|\s*Preview|\s*Changes|$)/i);
+            if (cpDescMatchRel && cpDescMatchRel[1]) {
+              cpDescription = cpDescMatchRel[1].trim();
+            }
+          }
+          // Last resort: strip known noise from the text
           if (!cpDescription) {
             cpDescription = cleanedText
-              .replace(/Checkpoint\s+made[\s\S]*?ago\s*/i, '')
-              .replace(/\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4}/i, '')
-              .replace(/Rollback\s+here/i, '')
-              .replace(/Preview/i, '')
-              .replace(/Changes/i, '')
+              .replace(/Checkpoint\s+made\s*/i, '')
+              .replace(/\d+\s+(?:second|minute|hour|day|week|month|year)s?\s*ago\s*/i, '')
+              .replace(/\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4}/gi, '')
+              .replace(/Rollback\s+here/gi, '')
+              .replace(/Preview/gi, '')
+              .replace(/Changes/gi, '')
               .trim();
           }
 

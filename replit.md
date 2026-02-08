@@ -78,6 +78,12 @@ npx tsx exporter/index.ts --clear-session
 
 ## Recent Changes
 
+- 2026-02-08: Checkpoint description extraction fix:
+  - Checkpoint description regex now works with absolute timestamps (after toggle), not just relative "...ago" format
+  - Primary regex captures text between "Checkpoint made" and first absolute timestamp/Rollback/Preview/Changes
+  - Fallback still supports old relative "...ago" separator
+  - Last-resort cleanup strips both absolute and relative timestamps plus known noise
+  - Ensures "Saved progress at the end of the loop" and similar descriptions are captured in JSON
 - 2026-02-08: Timestamp toggle and extraction fix:
   - Replit's timestamps are <span> elements with class Timestamp-module, role="switch", aria-checked="false"
   - Clicking them toggles from relative ("4 days ago") to absolute ("3:49 pm, Feb 03, 2026")
