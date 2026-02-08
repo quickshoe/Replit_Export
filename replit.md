@@ -78,6 +78,14 @@ npx tsx exporter/index.ts --clear-session
 
 ## Recent Changes
 
+- 2026-02-08: Expand-collapse and timestamp association fixes:
+  - Fixed expand-then-collapse bug: all expand passes now mark clicked elements with data-exporter-clicked="1" attribute
+  - Subsequent passes skip elements already marked, preventing accidental toggling (expand then collapse)
+  - Changed aria-expanded check from `=== 'false' || === null` to `!== 'true'` — skips already-expanded elements
+  - Fixed timestamp association for work entries: removed unreliable parent/sibling traversal
+  - Added backward-walk post-processing: containers without timestamps inherit from nearest previous container
+  - This correctly handles "Worked for X" entries that don't have their own timestamp element
+  - Agent usage details now extract correctly because sections stay expanded
 - 2026-02-08: Checkpoint description extraction fix:
   - Checkpoint description regex now works with absolute timestamps (after toggle), not just relative "...ago" format
   - Primary regex captures text between "Checkpoint made" and first absolute timestamp/Rollback/Preview/Changes
