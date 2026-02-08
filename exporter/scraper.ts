@@ -2,7 +2,7 @@ import { chromium, Browser, BrowserContext, Page } from 'playwright';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { ChatMessage, Checkpoint, WorkEntry, AgentUsageDetail, ReplExport } from './types';
-import { calculateDuration, extractReplId } from './utils';
+import { calculateDuration, extractReplName } from './utils';
 
 const SESSION_FILE = './playwright-session.json';
 
@@ -37,7 +37,6 @@ export class ReplitScraper {
     const loginPage = page || await this.context.newPage();
     const shouldClosePage = !page;
     
-    // Only navigate if we're not already on a login-related page
     const currentUrl = loginPage.url();
     if (!currentUrl.includes('/login') && !currentUrl.includes('/signup') && !currentUrl.includes('/auth') && !currentUrl.includes('github.com')) {
       await loginPage.goto('https://replit.com/login');
@@ -50,22 +49,18 @@ export class ReplitScraper {
     console.log('========================================\n');
 
     const startTime = Date.now();
-    const timeout = 300000; // 5 minutes
+    const timeout = 300000;
     let loginSuccess = false;
 
-    // Poll for login completion instead of using waitForURL
-    // This is more resilient to OAuth redirect errors
     while (Date.now() - startTime < timeout && !loginSuccess) {
       try {
         await loginPage.waitForTimeout(2000);
         
-        // Check if we're back on Replit (even if there was an error during redirect)
         const currentUrl = loginPage.url();
         const isOnReplit = currentUrl.includes('replit.com');
         const isOnAuthPage = currentUrl.includes('/login') || currentUrl.includes('/signup') || currentUrl.includes('/__/auth');
         const isOnGithub = currentUrl.includes('github.com');
         
-        // Check for auth cookies - this is the real indicator of successful login
         const cookies = await this.context.cookies('https://replit.com');
         const hasAuthCookies = cookies.some(c => 
           c.name.includes('connect.sid') || 
@@ -79,12 +74,9 @@ export class ReplitScraper {
           break;
         }
         
-        // If we're on Replit but not on auth pages, try to detect login via page content
         if (isOnReplit && !isOnAuthPage && !isOnGithub) {
-          // Give cookies a moment to be set
           await loginPage.waitForTimeout(2000);
           
-          // Recheck cookies
           const recheckedCookies = await this.context.cookies('https://replit.com');
           const hasAuthCookiesNow = recheckedCookies.some(c => 
             c.name.includes('connect.sid') || 
@@ -98,9 +90,7 @@ export class ReplitScraper {
             break;
           }
           
-          // Check if we can see user-specific elements on the page
           const isLoggedInByContent = await loginPage.evaluate(function() {
-            // Look for indicators that user is logged in
             var body = document.body.innerText.toLowerCase();
             var hasUserMenu = document.querySelector('[data-cy="user-menu"]') !== null;
             var hasAvatar = document.querySelector('[class*="Avatar"]') !== null;
@@ -115,14 +105,12 @@ export class ReplitScraper {
           }
         }
         
-        // Log progress
         const elapsed = Math.round((Date.now() - startTime) / 1000);
         if (elapsed % 10 === 0) {
           process.stdout.write(`\rWaiting for login... (${elapsed}s elapsed, on: ${currentUrl.substring(0, 50)}...)`);
         }
         
       } catch (pollErr) {
-        // Ignore errors during polling - page might be navigating
         continue;
       }
     }
@@ -134,13 +122,11 @@ export class ReplitScraper {
       fs.writeFileSync(SESSION_FILE, JSON.stringify(storageState, null, 2));
       console.log(`Session saved to ${SESSION_FILE}`);
     } else {
-      // Manual fallback - ask user if they completed login
       console.log('\n========================================');
       console.log('Automatic login detection did not complete.');
       console.log('If you have successfully logged in via OAuth, we can still try to continue.');
       console.log('========================================\n');
       
-      // Try one more cookie check
       const finalCookies = await this.context.cookies('https://replit.com');
       const hasAnyCookies = finalCookies.length > 0;
       
@@ -163,7 +149,6 @@ export class ReplitScraper {
   async checkLoggedIn(): Promise<boolean> {
     if (!this.context) throw new Error('Browser not initialized');
 
-    // First, check if we have cookies in our session
     const cookies = await this.context.cookies('https://replit.com');
     const hasAuthCookies = cookies.some(c => 
       c.name.includes('connect.sid') || 
@@ -176,27 +161,22 @@ export class ReplitScraper {
       return false;
     }
 
-    // Do a quick check without loading full page - just check if we get redirected
     const page = await this.context.newPage();
     try {
-      // Navigate to a lightweight endpoint to check auth status
       const response = await page.goto('https://replit.com/~', { 
         waitUntil: 'domcontentloaded',
         timeout: 30000 
       });
       
-      // Give a moment for any redirects
       await page.waitForTimeout(1000);
       
       const currentUrl = page.url();
       
-      // If we're on login page, we're not logged in
       if (this.isLoginPage(currentUrl)) {
         await page.close();
         return false;
       }
       
-      // If we made it to home or dashboard, we're logged in
       await page.close();
       return true;
     } catch {
@@ -213,10 +193,9 @@ export class ReplitScraper {
     const currentUrl = page.url();
     
     if (this.isLoginPage(currentUrl)) {
-      console.log('\n⚠️  Redirected to login page. Session may have expired.');
+      console.log('\n  Redirected to login page. Session may have expired.');
       console.log('Please log in again in the browser window...\n');
       
-      // Wait for user to complete login on this page
       await this.waitForLogin(page);
       
       console.log('Login successful! Continuing...\n');
@@ -226,8 +205,8 @@ export class ReplitScraper {
   async scrapeRepl(replUrl: string, outputDir: string = './exports'): Promise<ReplExport> {
     if (!this.context) throw new Error('Browser not initialized');
 
-    const replId = extractReplId(replUrl);
-    console.log(`\nScraping: ${replId}`);
+    const replName = extractReplName(replUrl);
+    console.log(`\nScraping: ${replName}`);
 
     const page = await this.context.newPage();
     
@@ -242,48 +221,34 @@ export class ReplitScraper {
     
     await page.waitForTimeout(3000);
 
-    // Check if we got redirected to login
     await this.handleLoginRedirect(page);
 
-    // If we were on login, navigate to the repl again
     const currentUrl = page.url();
     if (!currentUrl.includes(replUrl) && !this.isLoginPage(currentUrl)) {
-      // We might be on the homepage after login, navigate to repl
       console.log('Navigating to repl after login...');
       await page.goto(fullUrl, { waitUntil: 'networkidle', timeout: 60000 });
       await page.waitForTimeout(3000);
       
-      // Check again for login redirect
       await this.handleLoginRedirect(page);
     }
 
-    // Agent chat is always visible in the side panel (left or right)
-    // No need to navigate to a separate Agent tab
-
-    // Wait for chat content to load
     await page.waitForTimeout(2000);
 
-    // Find the chat container
     const chatContainer = await this.findChatContainer(page);
     
-    // Auto-scroll to load full chat history
     console.log('Scrolling to load full chat history...');
     await this.scrollToLoadAll(page, chatContainer);
 
-    // Expand all collapsed "Worked for X" and "X messages & X actions" sections
     console.log('Expanding collapsed sections...');
     await this.expandAllCollapsedSections(page);
 
-    // Extract messages, checkpoints, and work entries
     console.log('Extracting chat data...');
     const { messages, checkpoints, workEntries } = await this.extractChatData(page, outputDir);
 
-    // Calculate durations for checkpoints
     for (const cp of checkpoints) {
       cp.durationSeconds = calculateDuration(cp.timestamp, messages);
     }
 
-    // Save session after successful scrape
     try {
       const storageState = await this.context.storageState();
       fs.writeFileSync(SESSION_FILE, JSON.stringify(storageState, null, 2));
@@ -294,7 +259,7 @@ export class ReplitScraper {
     await page.close();
 
     const result: ReplExport = {
-      replId,
+      replName,
       replUrl: fullUrl,
       exportedAt: new Date().toISOString(),
       messages,
@@ -358,15 +323,103 @@ export class ReplitScraper {
     }
 
     if (expandedCount > 0) {
-      console.log(`\n  Expanded ${expandedCount} collapsed sections total`);
-      await page.waitForTimeout(2000);
-    } else {
-      console.log('  No collapsed sections found to expand');
+      console.log(`\n  Expanded ${expandedCount} collapsed sections`);
     }
+
+    await page.waitForTimeout(1000);
+
+    console.log('  Expanding Agent Usage chevrons...');
+    var agentUsageExpanded = 0;
+    for (var auRound = 0; auRound < 3; auRound++) {
+      var auClicked = await page.evaluate(function() {
+        var clicked = 0;
+
+        var allEls = document.querySelectorAll('button, [role="button"], div[class*="expandable"], div[class*="Expandable"], summary, details');
+        for (var i = 0; i < allEls.length; i++) {
+          var el = allEls[i];
+          var text = (el.textContent || '').trim();
+          if (text.indexOf('Agent Usage') >= 0 && text.length < 100) {
+            var ariaExp = el.getAttribute('aria-expanded');
+            if (ariaExp === 'false' || ariaExp === null) {
+              var rect = el.getBoundingClientRect();
+              if (rect.width > 0 && rect.height > 0) {
+                if (el['click']) el['click']();
+                clicked++;
+              }
+            }
+          }
+        }
+
+        var chevrons = document.querySelectorAll('[class*="EndOfRunSummary"] button, [class*="EndOfRunSummary"] [role="button"], [class*="endOfRun"] button');
+        for (var j = 0; j < chevrons.length; j++) {
+          var ch = chevrons[j];
+          var chText = (ch.textContent || '').trim();
+          if (chText.indexOf('$') >= 0 || chText.indexOf('Agent') >= 0 || chText.indexOf('Usage') >= 0) {
+            var chExp = ch.getAttribute('aria-expanded');
+            if (chExp === 'false' || chExp === null) {
+              var chRect = ch.getBoundingClientRect();
+              if (chRect.width > 0 && chRect.height > 0) {
+                if (ch['click']) ch['click']();
+                clicked++;
+              }
+            }
+          }
+        }
+
+        return clicked;
+      });
+
+      if (auClicked === 0) break;
+      agentUsageExpanded += auClicked;
+      await page.waitForTimeout(1500);
+    }
+
+    if (agentUsageExpanded > 0) {
+      console.log(`  Expanded ${agentUsageExpanded} Agent Usage sections`);
+    } else {
+      console.log('  No Agent Usage chevrons found to expand');
+    }
+
+    await page.waitForTimeout(1000);
+
+    console.log('  Expanding checkpoint details...');
+    var checkpointExpanded = 0;
+    for (var cpRound = 0; cpRound < 3; cpRound++) {
+      var cpClicked = await page.evaluate(function() {
+        var clicked = 0;
+        var allEls = document.querySelectorAll('button, [role="button"], summary, details, [class*="expandable"], [class*="Expandable"]');
+        for (var i = 0; i < allEls.length; i++) {
+          var el = allEls[i];
+          var text = (el.textContent || '').trim();
+          if (text.indexOf('Checkpoint made') >= 0 || text.indexOf('checkpoint made') >= 0) {
+            var ariaExp = el.getAttribute('aria-expanded');
+            if (ariaExp === 'false' || ariaExp === null) {
+              var rect = el.getBoundingClientRect();
+              if (rect.width > 0 && rect.height > 0) {
+                if (el['click']) el['click']();
+                clicked++;
+              }
+            }
+          }
+        }
+        return clicked;
+      });
+
+      if (cpClicked === 0) break;
+      checkpointExpanded += cpClicked;
+      await page.waitForTimeout(1500);
+    }
+
+    if (checkpointExpanded > 0) {
+      console.log(`  Expanded ${checkpointExpanded} checkpoint sections`);
+    } else {
+      console.log('  No checkpoint sections found to expand');
+    }
+
+    await page.waitForTimeout(1000);
   }
 
   private async findChatContainer(page: Page): Promise<string | null> {
-    // Look for the scrollable chat container
     const containerSelectors = [
       '[data-testid="agent-chat-container"]',
       '[data-testid="chat-container"]',
@@ -392,19 +445,17 @@ export class ReplitScraper {
   private async scrollToLoadAll(page: Page, containerSelector: string | null): Promise<void> {
     let previousCount = 0;
     let sameCountIterations = 0;
-    let loadMoreFailedClicks = 0; // Track clicks that don't add messages
+    let loadMoreFailedClicks = 0;
     const maxIterations = 100;
-    const maxLoadMoreFailures = 3; // Stop after 3 clicks that don't load more
+    const maxLoadMoreFailures = 3;
     const startTime = Date.now();
-    const maxTime = 60000; // 60 second maximum for scroll/load phase
+    const maxTime = 60000;
     
     for (let i = 0; i < maxIterations; i++) {
-      // Check time limit
       if (Date.now() - startTime > maxTime) {
         console.log(`\nReached time limit for loading history (60s)`);
         break;
       }
-      // Count current message elements
       const currentCount = await page.evaluate(function() {
         var selectors = [
           '[data-testid*="message"]',
@@ -422,7 +473,6 @@ export class ReplitScraper {
         return count;
       });
 
-      // Scroll to top of chat container
       await page.evaluate(function(selector) {
         if (selector) {
           var container = document.querySelector(selector);
@@ -430,7 +480,6 @@ export class ReplitScraper {
             container.scrollTop = 0;
           }
         }
-        // Also try common scroll patterns
         var scrollAreas = document.querySelectorAll('[class*="ScrollArea"], [class*="scroll"], [role="log"]');
         for (var j = 0; j < scrollAreas.length; j++) {
           scrollAreas[j].scrollTop = 0;
@@ -439,12 +488,10 @@ export class ReplitScraper {
 
       await page.waitForTimeout(500);
 
-      // Try to click "Show previous messages" or similar buttons
       const clickedLoadMore = await this.clickLoadMoreButton(page);
       if (clickedLoadMore) {
         process.stdout.write(`\rClicked load more button, waiting for new messages...`);
         
-        // Wait for new messages to appear by polling
         let loadWaitAttempts = 0;
         const maxLoadWaitAttempts = 10;
         let newCount = currentCount;
@@ -470,13 +517,12 @@ export class ReplitScraper {
           
           if (newCount > currentCount) {
             process.stdout.write(`\rLoaded ${newCount - currentCount} new messages...`);
-            loadMoreFailedClicks = 0; // Reset on success
+            loadMoreFailedClicks = 0;
             break;
           }
           loadWaitAttempts++;
         }
         
-        // If clicking didn't load new messages, track the failure
         if (newCount <= currentCount) {
           loadMoreFailedClicks++;
           process.stdout.write(`\rLoad more click ${loadMoreFailedClicks}/${maxLoadMoreFailures} didn't add messages...`);
@@ -493,7 +539,6 @@ export class ReplitScraper {
 
       await page.waitForTimeout(300);
 
-      // Check if we loaded new content
       if (currentCount === previousCount) {
         sameCountIterations++;
         if (sameCountIterations >= 5) {
@@ -509,7 +554,6 @@ export class ReplitScraper {
     }
     console.log('');
     
-    // Scroll back to bottom to ensure proper DOM order
     await page.evaluate(function(selector) {
       if (selector) {
         var container = document.querySelector(selector);
@@ -527,7 +571,6 @@ export class ReplitScraper {
   }
 
   private async clickLoadMoreButton(page: Page): Promise<boolean> {
-    // Try various selectors for "Show previous messages" or "Load more" buttons
     const loadMoreSelectors = [
       'button:has-text("Show previous")',
       'button:has-text("Load more")',
@@ -557,7 +600,6 @@ export class ReplitScraper {
       }
     }
 
-    // Also try finding buttons by text content using evaluate
     const clicked = await page.evaluate(function() {
       var buttons = document.querySelectorAll('button, [role="button"], a');
       for (var i = 0; i < buttons.length; i++) {
@@ -567,10 +609,8 @@ export class ReplitScraper {
             text.indexOf('load more') >= 0 || 
             text.indexOf('earlier') >= 0 ||
             text.indexOf('previous message') >= 0) {
-          // Check if visible
           var rect = btn.getBoundingClientRect();
           if (rect.width > 0 && rect.height > 0) {
-            // Use bracket notation to avoid TS error - click exists on HTMLElements
             if (btn['click']) btn['click']();
             return true;
           }
@@ -673,7 +713,6 @@ export class ReplitScraper {
       var index = 0;
       var seenKeys = {} as any;
 
-      // ===== PRIMARY STRATEGY: Use EventContainer elements =====
       var eventContainers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
 
       for (var ei = 0; ei < eventContainers.length; ei++) {
@@ -733,99 +772,158 @@ export class ReplitScraper {
             }
           }
 
-          var chargeDetails = [] as any[];
-          var totalCharge = null as any;
+          // Parse structured fields from the expanded content
+          var actionsMatch = rawText.match(/(\d+)\s*actions?/i);
+          var workDoneActions = actionsMatch ? parseInt(actionsMatch[1], 10) : null;
 
+          var itemsMatch = rawText.match(/(\d+)\s*lines/i);
+          var itemsReadLines = itemsMatch ? parseInt(itemsMatch[1], 10) : null;
+
+          var codePlusMatch = rawText.match(/\+(\d+)/);
+          var codeMinusMatch = rawText.match(/-(\d+)/);
+          var codeChangedPlus = codePlusMatch ? parseInt(codePlusMatch[1], 10) : null;
+          var codeChangedMinus = codeMinusMatch ? parseInt(codeMinusMatch[1], 10) : null;
+
+          // Extract agent usage total (first dollar amount, or from "Agent Usage" line)
+          var totalCharge = null as any;
           var costMatches = rawText.match(/\$[\d.]+/g);
-          if (costMatches) {
-            for (var ci = 0; ci < costMatches.length; ci++) {
-              totalCharge = costMatches[0];
-            }
+          if (costMatches && costMatches.length > 0) {
+            totalCharge = parseFloat(costMatches[0].substring(1));
+            if (isNaN(totalCharge)) totalCharge = null;
           }
 
+          // Extract individual charge line items from expanded Agent Usage section
+          var chargeDetails = [] as any[];
           var searchRoot = endOfRunRoot || evEl;
+
+          // Look for expanded Agent Usage sub-section
+          // After expanding Agent Usage chevron, individual items appear as label + $amount pairs
           var allTextNodes = searchRoot.querySelectorAll('span, div, p, li');
           var prevLabel = '';
+          var insideAgentUsage = false;
           for (var tn = 0; tn < allTextNodes.length; tn++) {
             var nodeText = (allTextNodes[tn].textContent || '').trim();
-            var chargeMatch = nodeText.match(/^\$[\d.]+$/);
-            if (chargeMatch && prevLabel) {
-              var labelClean = prevLabel.replace(/\s+/g, ' ').trim();
-              if (labelClean.toLowerCase() !== 'agent usage') {
-                chargeDetails.push({
-                  label: labelClean,
-                  amount: chargeMatch[0]
-                });
-              }
-            }
-            if (nodeText.length > 0 && nodeText.length < 200 && !nodeText.match(/^\$[\d.]+$/)) {
-              prevLabel = nodeText;
-            }
-          }
 
-          if (chargeDetails.length === 0 && costMatches && costMatches.length > 0) {
-            var lines = rawText.split('\n');
-            for (var li = 0; li < lines.length; li++) {
-              var line = lines[li].trim();
-              var lineChargeMatch = line.match(/^(.+?)\s*\$(\d+\.?\d*)$/);
-              if (lineChargeMatch) {
-                var lineLabel = lineChargeMatch[1].trim();
-                if (lineLabel.toLowerCase() !== 'agent usage') {
-                  chargeDetails.push({
-                    label: lineLabel,
-                    amount: '$' + lineChargeMatch[2]
-                  });
+            // Detect when we enter Agent Usage section
+            if (nodeText === 'Agent Usage' || (nodeText.indexOf('Agent Usage') >= 0 && nodeText.length < 30)) {
+              insideAgentUsage = true;
+              prevLabel = '';
+              continue;
+            }
+
+            if (insideAgentUsage) {
+              var chargeMatch = nodeText.match(/^\$([\d.]+)$/);
+              if (chargeMatch && prevLabel) {
+                var labelClean = prevLabel.replace(/\s+/g, ' ').trim();
+                // Skip labels that are just the total or agent usage header
+                if (labelClean.toLowerCase() !== 'agent usage' && labelClean.toLowerCase() !== 'total') {
+                  var chargeVal = parseFloat(chargeMatch[1]);
+                  if (!isNaN(chargeVal)) {
+                    chargeDetails.push({
+                      label: labelClean,
+                      amount: chargeVal
+                    });
+                  }
                 }
               }
+              if (nodeText.length > 0 && nodeText.length < 200 && !nodeText.match(/^\$[\d.]+$/)) {
+                prevLabel = nodeText;
+              }
             }
           }
 
-          var wDescription = cleanedText.substring(0, 2000);
-          if (workedMatch) {
-            var afterWorked = cleanedText.indexOf(workedMatch[0]);
-            if (afterWorked >= 0) {
-              wDescription = cleanedText.substring(afterWorked + workedMatch[0].length).trim();
-              if (wDescription.length < 10) {
-                wDescription = cleanedText.substring(0, 2000);
+          // Fallback: if no Agent Usage section found, try generic label+amount scanning
+          if (chargeDetails.length === 0) {
+            prevLabel = '';
+            for (var tn2 = 0; tn2 < allTextNodes.length; tn2++) {
+              var nodeText2 = (allTextNodes[tn2].textContent || '').trim();
+              var chargeMatch2 = nodeText2.match(/^\$([\d.]+)$/);
+              if (chargeMatch2 && prevLabel) {
+                var labelClean2 = prevLabel.replace(/\s+/g, ' ').trim();
+                if (labelClean2.toLowerCase() !== 'agent usage' &&
+                    labelClean2.indexOf('Worked for') < 0 &&
+                    labelClean2.indexOf('Time worked') < 0 &&
+                    labelClean2.indexOf('Work done') < 0 &&
+                    labelClean2.indexOf('Items read') < 0 &&
+                    labelClean2.indexOf('Code changed') < 0) {
+                  var chargeVal2 = parseFloat(chargeMatch2[1]);
+                  if (!isNaN(chargeVal2)) {
+                    chargeDetails.push({
+                      label: labelClean2,
+                      amount: chargeVal2
+                    });
+                  }
+                }
+              }
+              if (nodeText2.length > 0 && nodeText2.length < 200 && !nodeText2.match(/^\$[\d.]+$/)) {
+                prevLabel = nodeText2;
               }
             }
           }
 
           workEntries.push({
             timestamp: timestamp,
-            duration: workedMatch ? 'Worked for ' + wDuration : '',
+            timeWorked: wDuration || '',
             durationSeconds: wDurationSecs > 0 ? wDurationSecs : null,
-            description: wDescription.substring(0, 2000),
-            agentUsageCharge: totalCharge,
+            workDoneActions: workDoneActions,
+            itemsReadLines: itemsReadLines,
+            codeChangedPlus: codeChangedPlus,
+            codeChangedMinus: codeChangedMinus,
+            agentUsage: totalCharge,
             chargeDetails: chargeDetails,
             index: index++
           });
 
-          messages.push({
-            type: 'agent',
-            content: cleanedText.substring(0, 10000),
-            timestamp: timestamp,
-            index: index++
-          });
           continue;
         }
 
+        // ===== CHECKPOINT DETECTION =====
         var isCheckpoint = evClass.indexOf('checkpoint') >= 0 ||
           evEventType.indexOf('checkpoint') >= 0 ||
           innerCheckpointMarker !== null ||
           (cleanedText.indexOf('Checkpoint') >= 0 && cleanedText.length < 500);
 
         if (isCheckpoint) {
-          var costMatch = cleanedText.match(/\$[\d.]+/);
+          // Extract real timestamp from expanded checkpoint content
+          // Pattern: "3:49 pm, Feb 03, 2026" or "7:03 am, Feb 04, 2026"
+          var realTimestampMatch = rawText.match(/(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})/i);
+          var cpTimestamp = realTimestampMatch ? realTimestampMatch[1] : timestamp;
+
+          // Extract the description - get the line after "Checkpoint made X ago"
+          var cpDescription = '';
+          var cpDescMatch = rawText.match(/Checkpoint\s+made[\s\S]*?ago\s*([\s\S]*?)(?:\d{1,2}:\d{2}\s*(?:am|pm)|\s*Rollback|\s*Preview|\s*Changes|$)/i);
+          if (cpDescMatch && cpDescMatch[1]) {
+            cpDescription = cpDescMatch[1].trim();
+          }
+          if (!cpDescription) {
+            // Try to get just the meaningful part: between "ago" and timestamp/Rollback
+            cpDescription = cleanedText
+              .replace(/Checkpoint\s+made\s*.*?ago\s*/i, '')
+              .replace(/\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4}/i, '')
+              .replace(/Rollback\s+here/i, '')
+              .replace(/Preview/i, '')
+              .replace(/Changes/i, '')
+              .trim();
+          }
+
+          var costMatch = rawText.match(/\$[\d.]+/);
           checkpoints.push({
-            timestamp: timestamp,
-            description: cleanedText.substring(0, 1000),
+            timestamp: cpTimestamp,
+            description: cpDescription.substring(0, 1000),
             cost: costMatch ? costMatch[0] : null,
             durationSeconds: null,
             index: index++
           });
           continue;
         }
+
+        // ===== MESSAGE CLASSIFICATION =====
+        // Skip noise messages
+        if (cleanedText.match(/^Worked\s+for\s+/i)) continue;
+        if (cleanedText.match(/^Decided\s+on\s+/i) && cleanedText.length < 100) continue;
+        if (cleanedText.match(/^\d+\s+actions?\s*$/i)) continue;
+        if (cleanedText.match(/^Created task list\s*$/i)) continue;
+        if (cleanedText.match(/^Ready to share\?\s*Publish/i)) continue;
 
         var isUser = evClass.indexOf('usermessage') >= 0 ||
           evClass.indexOf('user-message') >= 0 ||
@@ -843,7 +941,7 @@ export class ReplitScraper {
         });
       }
 
-      // ===== FALLBACK STRATEGY: Use broader Message selectors =====
+      // ===== FALLBACK STRATEGY =====
       if (messages.length < 3) {
         var broadSelectors = [
           '[data-cy*="message"]',
@@ -922,30 +1020,6 @@ export class ReplitScraper {
 
       for (var ri = 0; ri < deduped.length; ri++) {
         deduped[ri].index = ri;
-      }
-
-      // ===== CHECKPOINT DETECTION FROM FULL PAGE =====
-      var bodyText = document.body.innerText || '';
-      var cpRegex = /(?:checkpoint|saved|deployed|created)[^$\n]{0,100}\$(\d+\.?\d*)/gi;
-      var cpMatch2;
-      while ((cpMatch2 = cpRegex.exec(bodyText)) !== null) {
-        var cpCost = '$' + cpMatch2[1];
-        var cpAlready = false;
-        for (var cpj = 0; cpj < checkpoints.length; cpj++) {
-          if (checkpoints[cpj].cost === cpCost) {
-            cpAlready = true;
-            break;
-          }
-        }
-        if (!cpAlready) {
-          checkpoints.push({
-            timestamp: null,
-            description: cpMatch2[0].substring(0, 200),
-            cost: cpCost,
-            durationSeconds: null,
-            index: deduped.length + checkpoints.length
-          });
-        }
       }
 
       return { messages: deduped, checkpoints: checkpoints, workEntries: workEntries };

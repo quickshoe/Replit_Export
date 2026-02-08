@@ -4,7 +4,7 @@ import { Command } from 'commander';
 import * as readline from 'readline';
 import * as fs from 'fs';
 import { ReplitScraper } from './scraper';
-import { saveJsonExport, exportToCsv, exportWorkTrackingCsv, exportAgentUsageDetailsCsv, ensureDir } from './utils';
+import { saveJsonExport, exportChatCsv, exportWorkTrackingCsv, exportAgentUsageDetailsCsv, ensureDir } from './utils';
 import type { ReplExport } from './types';
 
 const OUTPUT_DIR = './exports';
@@ -55,7 +55,6 @@ async function main() {
   program.parse();
   const options = program.opts();
 
-  // Handle clear session
   if (options.clearSession) {
     const sessionFile = './playwright-session.json';
     if (fs.existsSync(sessionFile)) {
@@ -83,13 +82,11 @@ async function main() {
   const outputDir = options.output;
   ensureDir(outputDir);
 
-  // Initialize scraper
   const scraper = new ReplitScraper();
   
   try {
     await scraper.init();
 
-    // Check if already logged in
     const isLoggedIn = await scraper.checkLoggedIn();
     if (!isLoggedIn) {
       console.log('Not logged in. Opening login page...');
@@ -98,7 +95,6 @@ async function main() {
       console.log('Already logged in (using saved session).');
     }
 
-    // Get URLs to export
     let urls: string[] = options.urls || [];
     if (urls.length === 0) {
       urls = await promptForUrls();
@@ -110,7 +106,6 @@ async function main() {
       process.exit(0);
     }
 
-    // Apply dry-run mode
     if (options.dryRun && urls.length > 1) {
       console.log(`\n[DRY RUN] Only processing first URL: ${urls[0]}`);
       urls = [urls[0]];
@@ -128,24 +123,22 @@ async function main() {
         const data = await scraper.scrapeRepl(url, outputDir);
         exports.push(data);
 
-        // Save individual JSON
         const jsonPath = saveJsonExport(data, outputDir);
-        console.log(`  ✓ Saved: ${jsonPath}`);
+        console.log(`  Saved: ${jsonPath}`);
       } catch (err) {
-        console.error(`  ✗ Error processing ${url}:`, err);
+        console.error(`  Error processing ${url}:`, err);
       }
     }
 
-    // Export combined CSV files
     if (exports.length > 0) {
-      const csvPath = exportToCsv(exports, outputDir);
-      console.log(`\n✓ Combined CSV saved: ${csvPath}`);
+      const chatPath = exportChatCsv(exports, outputDir);
+      console.log(`\nChat CSV saved: ${chatPath}`);
       
       const workTrackingPath = exportWorkTrackingCsv(exports, outputDir);
-      console.log(`✓ Work tracking CSV saved: ${workTrackingPath}`);
+      console.log(`Work tracking CSV saved: ${workTrackingPath}`);
       
       const agentUsagePath = exportAgentUsageDetailsCsv(exports, outputDir);
-      console.log(`✓ Agent usage details CSV saved: ${agentUsagePath}`);
+      console.log(`Agent usage details CSV saved: ${agentUsagePath}`);
     }
 
     console.log(`
@@ -156,10 +149,10 @@ async function main() {
 ║  Output:    ${outputDir.padEnd(45)}║
 ║                                                              ║
 ║  Files created:                                              ║
-║    • Individual JSON files per repl                          ║
-║    • all-events.csv (full chat + checkpoints)                ║
-║    • work-tracking.csv (time & cost summary)                 ║
-║    • agent-usage-details.csv (charge line items)             ║
+║    {replName}.json  - Full export per repl                   ║
+║    chat.csv         - Clean chat messages only               ║
+║    work-tracking.csv - Time, actions, cost breakdown         ║
+║    agent-usage-details.csv - Charge line items               ║
 ╚══════════════════════════════════════════════════════════════╝
 `);
 

@@ -15,39 +15,29 @@ export interface Checkpoint {
 
 export interface WorkEntry {
   timestamp: string | null;
-  duration: string;
+  timeWorked: string;
   durationSeconds: number | null;
-  description: string;
-  agentUsageCharge: string | null;
+  workDoneActions: number | null;
+  itemsReadLines: number | null;
+  codeChangedPlus: number | null;
+  codeChangedMinus: number | null;
+  agentUsage: number | null;
   chargeDetails: AgentUsageDetail[];
   index: number;
 }
 
 export interface AgentUsageDetail {
   label: string;
-  amount: string;
-  replId?: string;
-  timestamp?: string | null;
+  amount: number | null;
 }
 
 export interface ReplExport {
-  replId: string;
+  replName: string;
   replUrl: string;
   exportedAt: string;
   messages: ChatMessage[];
   checkpoints: Checkpoint[];
   workEntries: WorkEntry[];
-}
-
-export interface CsvRow {
-  replId: string;
-  eventType: 'message' | 'checkpoint';
-  messageType?: 'user' | 'agent';
-  content: string;
-  timestamp: string;
-  cost?: string;
-  durationSeconds?: string;
-  index: number;
 }
 
 export interface ExporterConfig {

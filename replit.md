@@ -6,9 +6,9 @@ A Node.js CLI tool that exports Replit Agent chat history and checkpoint metadat
 
 This tool allows you to extract and backup your Replit Agent conversations, including:
 - All chat messages (user and agent)
-- Checkpoint entries with timestamps, descriptions, and costs
-- Expanded "Worked for X" summaries with detailed work descriptions
-- Agent usage charge breakdowns (individual line items)
+- Checkpoint entries with real timestamps and descriptions
+- Expanded "Worked for X" summaries with structured work data
+- Agent usage charge breakdowns (individual line items from expanded Agent Usage chevron)
 - Duration calculations for each work entry
 
 ## Project Structure
@@ -49,9 +49,11 @@ npx tsx exporter/index.ts --clear-session
 4. Navigates to each repl directly (agent chat is in the side panel, no tab switching needed)
 5. Auto-scrolls to load full chat history
 6. Clicks "Show previous messages" buttons to load older history
-7. Expands all collapsed "Worked for X" and "X messages & X actions" sections
-8. Extracts messages, checkpoints, and work entries with cost breakdowns
-9. Exports to JSON (per repl) and CSV files (combined)
+7. Expands all collapsed "Worked for X" sections
+8. Expands "Agent Usage" chevrons within each work entry to reveal charge line items
+9. Expands checkpoint sections to extract real timestamps
+10. Extracts structured data: messages, checkpoints, work entries with charge breakdowns
+11. Exports to JSON (per repl) and CSV files (combined)
 
 ## Security
 
@@ -61,43 +63,36 @@ npx tsx exporter/index.ts --clear-session
 
 ## Output Files
 
-- `./exports/{replId}.json` - Individual JSON export per repl (includes workEntries array)
-- `./exports/all-events.csv` - Combined CSV with all messages and checkpoints
-- `./exports/work-tracking.csv` - CSV with time worked, duration, cost, and work descriptions
-- `./exports/agent-usage-details.csv` - CSV with individual charge line items (excludes redundant "Agent Usage" top-level line)
+### Naming Convention
+- `replName` is the part after `/repls/` in the URL (e.g., `Replit-Export-Tool`)
+- Used consistently in all CSV content, JSON filenames, and file structure
+
+### Files Generated
+- `./exports/{replName}.json` - Individual JSON export per repl (includes workEntries array with structured fields)
+- `./exports/chat.csv` - Clean chat messages only (replName, timestamp, messageType, content) - no checkpoints, no "Worked for" noise
+- `./exports/work-tracking.csv` - Structured work data:
+  - replName, timestamp, timeWorked (e.g. "2 minutes"), workDoneActions (number), itemsReadLines (number), codeChangedPlus (number), codeChangedMinus (number), agentUsage (number, no $ symbol)
+- `./exports/agent-usage-details.csv` - Individual charge line items from expanded Agent Usage sections:
+  - replName, timestamp, timeWorked, lineItemLabel, lineItemAmount (number), totalAgentUsage (number)
 
 ## Recent Changes
 
-- 2026-02-07: Expand collapsed sections and extract detailed work data:
-  - Removed navigateToAgentTab - agent chat is always in side panel (left or right)
-  - Added expandAllCollapsedSections: clicks ExpandableFeedContent buttons to reveal "Worked for X" summaries
-  - Multiple expansion rounds to handle nested collapsed content
-  - New WorkEntry type captures duration, durationSeconds, description, agentUsageCharge, chargeDetails
-  - New AgentUsageDetail type for individual charge line items
-  - extractChatData now detects EndOfRunSummary elements and parses expanded content
-  - Parses "Worked for X minutes" duration strings into seconds
-  - Extracts charge details by scanning span/div text nodes for $X.XX patterns with preceding labels
-  - Excludes redundant top-level "Agent Usage" line from charge details
-  - work-tracking.csv now populated from workEntries (falls back to checkpoints if no work entries found)
-  - New agent-usage-details.csv with per-line-item charge breakdown
-  - ReplExport type includes workEntries array in JSON output
-- 2026-02-07: Major rewrite of extractChatData using Replit-specific DOM selectors:
-  - Primary strategy: queries `[class*="eventContainer"]` and `[data-event-type]` elements directly
-  - Uses `data-cy="user-message"` and `data-event-type="user-message"` for reliable user message classification
-  - Uses `querySelector` on descendants instead of walking className strings (avoids SVGAnimatedString crash)
-  - All `.className` access replaced with `.getAttribute('class')` to handle SVG elements safely
-  - Fallback strategy: broader selectors like `[data-cy*="message"]`, `[class*="Message"][class*="module"]`
-  - DOM debug dump now captures `data-cy` and `data-event-type` attributes
-  - Deduplication uses first-200-chars key + substring comparison pass
-  - Checkpoint detection from page-wide text patterns
-  - Eliminated the broken "find scrollable container" approach (was picking CodeMirror editor)
-- 2026-02-04: Made OAuth login more resilient - uses polling instead of waitForURL to handle redirect errors
-- 2026-02-04: Added fallback that continues if any cookies exist after OAuth (even if automatic detection fails)
-- 2026-02-04: Fixed __name error completely - inlined all function logic (no nested functions in page.evaluate)
-- 2026-02-04: Added "Show previous messages" button click detection to load full chat history
-- 2026-02-04: Improved login flow to avoid multiple prompts - better OAuth/GitHub login handling
-- 2026-02-04: Added work-tracking.csv output for simplified time/cost tracking
-- 2026-02-04: Fixed login redirect detection - tool now waits for re-authentication when session expires
+- 2026-02-08: Major data quality improvements:
+  - replName now uses just the part after /repls/ (e.g. "Replit-Export-Tool") consistently across all files
+  - timestamp always second column in all CSVs for consistency
+  - Replaced all-events.csv with clean chat.csv (user/agent messages only, no checkpoints/noise)
+  - work-tracking.csv now has structured columns: timeWorked, workDoneActions, itemsReadLines, codeChangedPlus, codeChangedMinus, agentUsage (no $ symbol)
+  - agent-usage-details.csv captures individual line items from expanded Agent Usage chevron
+  - expandAllCollapsedSections now also clicks Agent Usage chevrons and checkpoint sections
+  - Checkpoint timestamps extracted from expanded content (e.g. "3:49 pm, Feb 03, 2026") not relative "X ago"
+  - Checkpoint descriptions cleaned: no "Rollback here", "Preview", "Changes" noise
+  - Chat messages filtered: no "Worked for X", "Decided on X", "Created task list", "Ready to share? Publish" entries
+  - WorkEntry type uses structured numeric fields instead of concatenated text strings
+  - AgentUsageDetail.amount is now a number (no $ prefix)
+  - Removed CsvRow type (replaced by direct Record usage)
+- 2026-02-07: Expand collapsed sections and extract detailed work data
+- 2026-02-07: Major rewrite of extractChatData using Replit-specific DOM selectors
+- 2026-02-04: Made OAuth login more resilient
 - 2026-02-03: Initial implementation with Playwright scraper
 
 ## Technical Notes
@@ -114,6 +109,7 @@ npx tsx exporter/index.ts --clear-session
 - This prevents tsx from injecting `__name` helper functions that don't exist in browser context
 - **CRITICAL**: Use `el.getAttribute('class')` instead of `el.className` — SVG elements have `SVGAnimatedString` for className which is NOT a string and crashes `.toLowerCase()` / `.indexOf()` etc.
 - Use `el.querySelector('[data-cy="user-message"]')` for descendant checks instead of walking className strings
+- Do NOT use regex `s` flag — requires ES2018+. Use `[\s\S]` instead of `.` for matching newlines.
 
 **Navigation Notes**
 - Agent chat is always visible in the left (or right) side panel - no separate "Agent tab" exists
@@ -125,5 +121,6 @@ npx tsx exporter/index.ts --clear-session
 - `EndOfRunSummary-module__*__root` - Container for "Worked for X" summaries
 - `ExpandableFeedContent-module__*__expandableButton` - Button to expand collapsed sections
 - `aria-expanded` attribute tracks expand/collapse state
-- After expanding, charge details appear as span/div elements with $X.XX amounts
+- After expanding "Worked for X", a second expansion of "Agent Usage" chevron reveals individual charge line items
 - Labels precede their amounts in the DOM tree
+- Checkpoint sections expand to reveal real timestamps like "3:49 pm, Feb 03, 2026"
