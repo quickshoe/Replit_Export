@@ -392,6 +392,190 @@ export class ReplitScraper {
     return totalClicked;
   }
 
+  private async hoverDurationElements(page: Page): Promise<number> {
+    var durationIndices: number[] = await page.evaluate(function() {
+      var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
+      var indices = [] as number[];
+      for (var i = 0; i < containers.length; i++) {
+        var el = containers[i];
+        var text = (el.textContent || '').trim();
+        if (/Worked\s+for\s+/i.test(text) || (el.getAttribute('class') || '').indexOf('EndOfRunSummary') >= 0) {
+          indices.push(i);
+        }
+      }
+      return indices;
+    });
+
+    if (durationIndices.length === 0) return 0;
+    console.log(`  Found ${durationIndices.length} work entry containers to check for precise durations`);
+
+    var captured = 0;
+
+    for (var di = 0; di < durationIndices.length; di++) {
+      var containerIdx = durationIndices[di];
+
+      var durationElInfo = await page.evaluate(function(idx) {
+        var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
+        if (idx >= containers.length) return null;
+        var el = containers[idx];
+
+        var already = el.getAttribute('data-precise-duration');
+        if (already && already.length > 0) return null;
+
+        var titleAttr = '';
+        var candidates = el.querySelectorAll('*');
+        for (var ci = 0; ci < candidates.length; ci++) {
+          var cand = candidates[ci];
+          var ct = (cand.textContent || '').trim();
+          var hasTimeWord = ct.indexOf('minute') >= 0 || ct.indexOf('second') >= 0 || ct.indexOf('hour') >= 0;
+          if (!hasTimeWord) continue;
+          if (ct.length > 100) continue;
+
+          var ta = cand.getAttribute('title') || '';
+          var aa = cand.getAttribute('aria-label') || '';
+          if (ta && /\d+\s*(second|minute|hour|day|week|month|year)s?/i.test(ta)) {
+            titleAttr = ta;
+            break;
+          }
+          if (aa && /\d+\s*(second|minute|hour|day|week|month|year)s?/i.test(aa)) {
+            titleAttr = aa;
+            break;
+          }
+        }
+
+        if (titleAttr.length > 0) {
+          var cleaned = titleAttr.replace(/^Worked\s+for\s+/i, '').trim();
+          el.setAttribute('data-precise-duration', cleaned);
+          return null;
+        }
+
+        var durationElements = [] as any[];
+        for (var si = 0; si < candidates.length; si++) {
+          var sel = candidates[si];
+          var st = (sel.textContent || '').trim();
+          if (st.length === 0 || st.length > 60) continue;
+          if (!/\d+\s*(minute|second|hour)s?/i.test(st)) continue;
+          if (sel.children && sel.children.length > 3) continue;
+
+          var sr = sel.getBoundingClientRect();
+          if (sr.width > 0 && sr.height > 0) {
+            durationElements.push({
+              index: si,
+              text: st,
+              top: sr.top,
+              left: sr.left,
+              width: sr.width,
+              height: sr.height
+            });
+          }
+        }
+
+        if (durationElements.length === 0) return null;
+
+        var best = durationElements[0];
+        for (var bi = 1; bi < durationElements.length; bi++) {
+          if (durationElements[bi].text.length < best.text.length) {
+            best = durationElements[bi];
+          }
+        }
+
+        return {
+          containerIdx: idx,
+          elIndex: best.index,
+          text: best.text,
+          centerX: best.left + best.width / 2,
+          centerY: best.top + best.height / 2
+        };
+      }, containerIdx);
+
+      if (!durationElInfo) continue;
+
+      try {
+        await page.evaluate(function(idx) {
+          var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
+          if (idx < containers.length) {
+            containers[idx].scrollIntoView({ block: 'center', behavior: 'instant' });
+          }
+        }, containerIdx);
+        await page.waitForTimeout(200);
+
+        var freshCoords = await page.evaluate(function(args) {
+          var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
+          if (args.containerIdx >= containers.length) return null;
+          var el = containers[args.containerIdx];
+          var candidates = el.querySelectorAll('*');
+          if (args.elIndex >= candidates.length) return null;
+          var target = candidates[args.elIndex];
+          var r = target.getBoundingClientRect();
+          if (r.width === 0 || r.height === 0) return null;
+          return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+        }, { containerIdx: containerIdx, elIndex: durationElInfo.elIndex });
+
+        if (!freshCoords) continue;
+
+        await page.mouse.move(freshCoords.x, freshCoords.y);
+        await page.waitForTimeout(500);
+
+        var tooltipText = await page.evaluate(function(info) {
+          var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
+          if (info.containerIdx >= containers.length) return null;
+          var el = containers[info.containerIdx];
+
+          var candidates = el.querySelectorAll('*');
+          if (info.elIndex < candidates.length) {
+            var hovered = candidates[info.elIndex];
+            var ta = hovered.getAttribute('title') || '';
+            var aa = hovered.getAttribute('aria-label') || '';
+            if (ta && /\d+\s*(second|minute|hour|day|week|month|year)s?/i.test(ta) && ta.length < 100) {
+              return ta.replace(/^Worked\s+for\s+/i, '').trim();
+            }
+            if (aa && /\d+\s*(second|minute|hour|day|week|month|year)s?/i.test(aa) && aa.length < 100) {
+              return aa.replace(/^Worked\s+for\s+/i, '').trim();
+            }
+          }
+
+          var tooltipSelectors = [
+            '[role="tooltip"]',
+            '[class*="tooltip" i]',
+            '[class*="Tooltip"]',
+            '[class*="popover" i]',
+            '[class*="Popover"]',
+            '[data-radix-popper-content-wrapper]',
+            '[data-state="open"][class*="Content"]',
+            '[data-side]'
+          ];
+          var allTooltips = document.querySelectorAll(tooltipSelectors.join(', '));
+          for (var ti = 0; ti < allTooltips.length; ti++) {
+            var tt = (allTooltips[ti].textContent || '').trim();
+            if (tt.length > 0 && tt.length < 150 && /\d+\s*(second|minute|hour|day|week|month|year)s?/i.test(tt)) {
+              return tt.replace(/^Worked\s+for\s+/i, '').trim();
+            }
+          }
+
+          return null;
+        }, durationElInfo);
+
+        if (tooltipText) {
+          await page.evaluate(function(args) {
+            var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
+            if (args.idx < containers.length) {
+              containers[args.idx].setAttribute('data-precise-duration', args.duration);
+            }
+          }, { idx: containerIdx, duration: tooltipText });
+          console.log(`  [Hover] Container ${containerIdx}: "${durationElInfo.text}" -> "${tooltipText}"`);
+          captured++;
+        }
+
+        await page.mouse.move(0, 0);
+        await page.waitForTimeout(100);
+      } catch (e) {
+        // Skip on hover error
+      }
+    }
+
+    return captured;
+  }
+
   private async extractElementData(page: Page, index: number, lastTimestamp: string | null): Promise<any> {
     return await page.evaluate(function(args) {
       var idx = args.idx;
@@ -453,27 +637,32 @@ export class ReplitScraper {
       if (endOfRunRoot || workedMatch) {
         var wDuration = workedMatch ? workedMatch[1] : '';
 
-        var preciseDuration = null as any;
-        var searchEls = (endOfRunRoot || el).querySelectorAll('*');
-        for (var tdi = 0; tdi < searchEls.length; tdi++) {
-          var tdEl = searchEls[tdi];
-          var tdText = (tdEl.textContent || '').trim();
-          var tdHasWorked = tdText.indexOf('Worked') >= 0 || tdText.indexOf('minute') >= 0 || tdText.indexOf('second') >= 0 || tdText.indexOf('hour') >= 0;
-          if (!tdHasWorked) continue;
+        var hoverPrecise = el.getAttribute('data-precise-duration');
+        if (hoverPrecise && hoverPrecise.length > 0 && /\d+\s*(second|minute|hour|day|week|month|year)s?/i.test(hoverPrecise)) {
+          wDuration = hoverPrecise;
+        } else {
+          var preciseDuration = null as any;
+          var searchEls = (endOfRunRoot || el).querySelectorAll('*');
+          for (var tdi = 0; tdi < searchEls.length; tdi++) {
+            var tdEl = searchEls[tdi];
+            var tdText = (tdEl.textContent || '').trim();
+            var tdHasWorked = tdText.indexOf('Worked') >= 0 || tdText.indexOf('minute') >= 0 || tdText.indexOf('second') >= 0 || tdText.indexOf('hour') >= 0;
+            if (!tdHasWorked) continue;
 
-          var tdTitle = tdEl.getAttribute('title') || '';
-          var tdAria = tdEl.getAttribute('aria-label') || '';
-          var tdTooltip = tdTitle || tdAria;
-          if (tdTooltip && /\d+\s*(second|minute|hour|day|week|month|year)s?/i.test(tdTooltip) && tdTooltip.length < 100) {
-            var tdClean = tdTooltip.replace(/^Worked\s+for\s+/i, '').trim();
-            if (tdClean.length > 0 && /\d+\s*(second|minute|hour|day|week|month|year)s?/i.test(tdClean)) {
-              preciseDuration = tdClean;
-              break;
+            var tdTitle = tdEl.getAttribute('title') || '';
+            var tdAria = tdEl.getAttribute('aria-label') || '';
+            var tdTooltip = tdTitle || tdAria;
+            if (tdTooltip && /\d+\s*(second|minute|hour|day|week|month|year)s?/i.test(tdTooltip) && tdTooltip.length < 100) {
+              var tdClean = tdTooltip.replace(/^Worked\s+for\s+/i, '').trim();
+              if (tdClean.length > 0 && /\d+\s*(second|minute|hour|day|week|month|year)s?/i.test(tdClean)) {
+                preciseDuration = tdClean;
+                break;
+              }
             }
           }
-        }
-        if (preciseDuration) {
-          wDuration = preciseDuration;
+          if (preciseDuration) {
+            wDuration = preciseDuration;
+          }
         }
 
         var wDurationSecs = 0;
@@ -800,6 +989,13 @@ export class ReplitScraper {
       if (tsToggledAfter > 0) {
         console.log(`  Toggled ${tsToggledAfter} newly revealed timestamps`);
       }
+    }
+
+    // ===== PHASE 2.5: Hover over duration elements to capture precise tooltips =====
+    console.log('  Phase 2.5: Hovering over duration elements to capture precise tooltips...');
+    var hoverCount = await this.hoverDurationElements(page);
+    if (hoverCount > 0) {
+      console.log(`  Captured ${hoverCount} precise duration tooltips via hover`);
     }
 
     // ===== PHASE 3: Extract all data =====
