@@ -383,61 +383,127 @@ export class ReplitScraper {
     return result;
   }
 
-  private async checkAgentWorking(page: Page): Promise<boolean> {
+  private async checkAgentWorking(page: Page): Promise<{ working: boolean; debug: string }> {
     return await page.evaluate(function() {
-      function isVisible(el: Element): boolean {
-        var rect = (el as HTMLElement).getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0;
-      }
+      // Detection strategy uses a precise signal from the user:
+      // The agent chat input area has a submit button (up arrow) when idle,
+      // and a stop button (square icon) when the agent is running.
+      // The app-level stop button at the top of the page is deliberately IGNORED.
+      //
+      // We combine two signals:
+      //  1. Stop button in the chat input area (primary — definitive "working")
+      //  2. Last message pattern (secondary — confirms idle or supports working)
 
-      // Primary indicator: Stop/cancel button specific to agent runs.
-      // Only match buttons whose accessible label specifically says "Stop" or
-      // "Cancel" AND that live inside the agent chat panel area.
-      var agentPanel = document.querySelector(
-        '[class*="AgentChat"], [class*="agentChat"], [class*="agent-chat"], ' +
-        '[data-testid*="agent" i]'
+      // Step 1: Find the agent chat panel using known Replit class patterns.
+      var chatPanel = document.querySelector(
+        '[class*="AgentChat"], [class*="agentChat"], [class*="agent-chat"]'
       );
-      var searchRoot = agentPanel || document;
-      var buttons = searchRoot.querySelectorAll('button');
-      for (var b = 0; b < buttons.length; b++) {
-        var btn = buttons[b];
-        var ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
-        var btnText = (btn.textContent || '').trim().toLowerCase();
-        // Must explicitly say "stop" as a standalone concept (not "stopwatch" etc.)
-        var isStopBtn = (ariaLabel === 'stop' || ariaLabel === 'stop agent' ||
-          ariaLabel === 'cancel' || ariaLabel === 'cancel run' ||
-          btnText === 'stop' || btnText === 'cancel');
-        if (isStopBtn && isVisible(btn)) return true;
+
+      // If we can't find the agent chat panel, we cannot reliably detect.
+      // Return idle to avoid false positives, but warn in debug.
+      if (!chatPanel) return { working: false, debug: 'Agent chat panel not found — assuming idle' };
+
+      // Step 2: Within the chat panel, find the form containing a textarea.
+      // This is the agent chat input where the user types messages.
+      var forms = chatPanel.querySelectorAll('form');
+      var chatForm: Element | null = null;
+      for (var f = 0; f < forms.length; f++) {
+        if (forms[f].querySelector('textarea')) {
+          chatForm = forms[f];
+          break;
+        }
+      }
+      // Fallback: find textarea directly in chat panel, walk up to button container
+      if (!chatForm) {
+        var textareas = chatPanel.querySelectorAll('textarea');
+        for (var t = 0; t < textareas.length; t++) {
+          var parent: HTMLElement | null = textareas[t].parentElement;
+          while (parent && parent !== chatPanel) {
+            if (parent.querySelector('button')) {
+              chatForm = parent;
+              break;
+            }
+            parent = parent.parentElement;
+          }
+          if (chatForm) break;
+        }
       }
 
-      // Secondary indicator: Agent-specific class names for active state.
-      // These are narrow Replit-internal module class patterns.
-      var agentActiveSelectors = [
-        '[class*="AgentState"][class*="working" i]',
-        '[class*="AgentState"][class*="thinking" i]',
-        '[class*="AgentState"][class*="running" i]',
-        '[class*="agentState"][class*="working" i]',
-        '[class*="agentState"][class*="thinking" i]',
-        '[class*="agentState"][class*="running" i]',
-        '[class*="EndOfRunSummary"][class*="streaming" i]',
-        '[class*="AgentChat"][class*="streaming" i]',
-        '[class*="agentChat"][class*="streaming" i]'
-      ];
-      for (var s = 0; s < agentActiveSelectors.length; s++) {
-        var match = document.querySelector(agentActiveSelectors[s]);
-        if (match && isVisible(match)) return true;
+      // Step 3: Check the submit/stop button in the chat input area
+      var stopButtonFound = false;
+      if (chatForm) {
+        var btns = chatForm.querySelectorAll('button');
+        for (var b = 0; b < btns.length; b++) {
+          var btn = btns[b];
+          var rect = (btn as HTMLElement).getBoundingClientRect();
+          if (rect.width <= 0 || rect.height <= 0) continue;
+
+          // Check aria-label for "stop" — safe to use indexOf here because
+          // we're already scoped to buttons inside the chat input form
+          var ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+          if (ariaLabel.indexOf('stop') >= 0) {
+            stopButtonFound = true;
+            break;
+          }
+
+          // Check for stop icon: SVG with rect only (square/stop icon)
+          // vs submit icon which has path elements (arrow shape)
+          var svgs = btn.querySelectorAll('svg');
+          for (var s = 0; s < svgs.length; s++) {
+            var svg = svgs[s];
+            var hasRect = svg.querySelector('rect');
+            var hasPath = svg.querySelector('path');
+            var hasLine = svg.querySelector('line');
+            var hasPolyline = svg.querySelector('polyline');
+            if (hasRect && !hasPath && !hasLine && !hasPolyline) {
+              stopButtonFound = true;
+              break;
+            }
+          }
+          if (stopButtonFound) break;
+        }
       }
 
-      return false;
+      // If we found a stop button in the chat input, agent is definitely working
+      if (stopButtonFound) return { working: true, debug: 'Stop button found in chat input area' };
+
+      // Step 4: Check the last message as a secondary signal.
+      // If the last message is "Worked for X" / "Time worked", agent is idle.
+      // If the chat form wasn't found (ambiguous state), use this to decide.
+      // Look for event/message containers within the chat panel.
+      var containers = chatPanel.querySelectorAll(
+        '[class*="event" i], [class*="Event"], [class*="message" i], [class*="Message"], ' +
+        '[class*="ChatItem"], [class*="chatItem"], [class*="FeedItem"], [class*="feedItem"]'
+      );
+      if (containers.length > 0) {
+        // Check the last few containers (the very last might be a wrapper)
+        var checkCount = Math.min(3, containers.length);
+        for (var c = containers.length - 1; c >= containers.length - checkCount; c--) {
+          var text = (containers[c].textContent || '').trim();
+          if (text.length < 5) continue; // Skip empty/trivial containers
+          // "Worked for X" or "Time worked" = agent finished = idle
+          if (/worked\s+for\s+/i.test(text) || /time\s+worked/i.test(text)) {
+            return { working: false, debug: 'Last message matches "Worked for" pattern — idle' };
+          }
+          // If we found a substantive last message that is NOT "Worked for",
+          // we can't be sure — could be a user message or agent still typing.
+          // Without the stop button signal, assume idle (avoid false positives).
+          break;
+        }
+      }
+
+      var formStatus = chatForm ? 'chat form found' : 'chat form NOT found';
+      return { working: false, debug: 'No stop button detected (' + formStatus + ') — assuming idle' };
     });
   }
 
   private async waitForAgentIdle(page: Page): Promise<void> {
     console.log('\nPre-check: Checking if Replit Agent is currently working...');
 
-    var isWorking = await this.checkAgentWorking(page);
+    var result = await this.checkAgentWorking(page);
+    console.log('  Detection: ' + result.debug);
 
-    if (!isWorking) {
+    if (!result.working) {
       console.log('  Replit Agent is idle. Proceeding with scraping.');
       console.log('\n========================================');
       console.log('IMPORTANT: Do NOT use Replit Agent while the scraper is running.');
@@ -461,9 +527,9 @@ export class ReplitScraper {
     while (Date.now() - waitStart < maxWaitMs) {
       await page.waitForTimeout(pollIntervalMs);
 
-      var stillWorking = await this.checkAgentWorking(page);
+      var pollResult = await this.checkAgentWorking(page);
 
-      if (!stillWorking) {
+      if (!pollResult.working) {
         var elapsedSec = Math.round((Date.now() - waitStart) / 1000);
         console.log(`\n  Replit Agent finished working. (Waited ${elapsedSec}s)`);
         console.log('  Proceeding with scraping.\n');
