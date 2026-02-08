@@ -427,85 +427,15 @@ export class ReplitScraper {
         var text = (bestTarget.textContent || '').trim();
         debugInfo.push('Found Agent Usage element: tag=' + tag + ' text="' + text + '"');
 
-        var clickTarget = bestTarget;
-        var rect = clickTarget.getBoundingClientRect();
+        var rect = bestTarget.getBoundingClientRect();
         if (rect.width > 0 && rect.height > 0) {
-          clickTarget.setAttribute('data-exporter-au-clicked', '1');
-          if (clickTarget['click']) clickTarget['click']();
+          bestTarget.setAttribute('data-exporter-au-clicked', '1');
+          if (bestTarget['click']) bestTarget['click']();
           debugInfo.push('CLICKED "' + text + '"');
           return { clicked: true, debug: debugInfo.join('; ') };
         }
 
-        var parent = bestTarget.parentElement;
-        if (parent && parent !== el) {
-          var siblings = parent.children;
-          for (var si = 0; si < siblings.length; si++) {
-            var sib = siblings[si];
-            if (sib === bestTarget) continue;
-            var sibTag = sib.tagName ? sib.tagName.toLowerCase() : '';
-            var sibClass = sib.getAttribute('class') || '';
-            var isSvg = sibTag === 'svg' || sibClass.indexOf('chevron') >= 0 || sibClass.indexOf('icon') >= 0 || sibClass.indexOf('arrow') >= 0;
-            var isBtn = sibTag === 'button' || sib.getAttribute('role') === 'button' || sib.getAttribute('aria-expanded') !== null;
-            if (isSvg || isBtn) {
-              var sibRect = sib.getBoundingClientRect();
-              if (sibRect.width > 0 && sibRect.height > 0) {
-                sib.setAttribute('data-exporter-au-clicked', '1');
-                if (sib['click']) sib['click']();
-                debugInfo.push('CLICKED sibling: tag=' + sibTag + ' class=' + sibClass.substring(0, 60));
-                return { clicked: true, debug: debugInfo.join('; ') };
-              }
-            }
-          }
-
-          var pRect = parent.getBoundingClientRect();
-          if (pRect.width > 0 && pRect.height > 0) {
-            var pText = (parent.textContent || '').trim();
-            if (pText.indexOf('Worked for') < 0 && pText.length < 200) {
-              parent.setAttribute('data-exporter-au-clicked', '1');
-              if (parent['click']) parent['click']();
-              var pTag = parent.tagName ? parent.tagName.toLowerCase() : '';
-              debugInfo.push('CLICKED parent: tag=' + pTag);
-              return { clicked: true, debug: debugInfo.join('; ') };
-            } else {
-              debugInfo.push('Skipped parent click - contains "Worked for" or too large');
-            }
-          }
-
-          var grandparent = parent.parentElement;
-          if (grandparent && grandparent !== el) {
-            var gpChildren = grandparent.children;
-            for (var gi = 0; gi < gpChildren.length; gi++) {
-              var gpChild = gpChildren[gi];
-              if (gpChild === parent) continue;
-              var gpTag = gpChild.tagName ? gpChild.tagName.toLowerCase() : '';
-              var gpClass = gpChild.getAttribute('class') || '';
-              var gpText = (gpChild.textContent || '').trim();
-              if (gpText.indexOf('Worked for') >= 0) continue;
-              var gpIsSvg = gpTag === 'svg' || gpClass.indexOf('chevron') >= 0 || gpClass.indexOf('icon') >= 0;
-              var gpIsBtn = gpTag === 'button' || gpChild.getAttribute('role') === 'button' || gpChild.getAttribute('aria-expanded') !== null;
-              if (gpIsSvg || gpIsBtn) {
-                var gpRect = gpChild.getBoundingClientRect();
-                if (gpRect.width > 0 && gpRect.height > 0) {
-                  gpChild.setAttribute('data-exporter-au-clicked', '1');
-                  if (gpChild['click']) gpChild['click']();
-                  debugInfo.push('CLICKED grandparent sibling: tag=' + gpTag);
-                  return { clicked: true, debug: debugInfo.join('; ') };
-                }
-              }
-            }
-
-            var gpRect2 = grandparent.getBoundingClientRect();
-            var gpText2 = (grandparent.textContent || '').trim();
-            if (gpRect2.width > 0 && gpRect2.height > 0 && gpText2.indexOf('Worked for') < 0 && gpText2.length < 200) {
-              grandparent.setAttribute('data-exporter-au-clicked', '1');
-              if (grandparent['click']) grandparent['click']();
-              debugInfo.push('CLICKED grandparent');
-              return { clicked: true, debug: debugInfo.join('; ') };
-            }
-          }
-        }
-
-        debugInfo.push('Agent Usage element found but not clickable');
+        debugInfo.push('Agent Usage element found but not clickable (skipping)');
       } else {
         debugInfo.push('No element with exact "Agent Usage" text found');
       }
@@ -662,10 +592,13 @@ export class ReplitScraper {
         chargeDebug.push('agentUsageHeading=' + (agentUsageHeading ? 'found(tag=' + (agentUsageHeading.tagName || '').toLowerCase() + ',text=' + (agentUsageHeading.textContent || '').trim().substring(0, 40) + ')' : 'null'));
 
         if (agentUsageHeading) {
+          var auSection = agentUsageHeading.parentElement || agentUsageHeading;
+          var auSectionEls = auSection.querySelectorAll('*');
           var labelCandidates = [] as any[];
           var amountCandidates = [] as any[];
-          for (var ci = 0; ci < allChildEls.length; ci++) {
-            var childEl = allChildEls[ci];
+          chargeDebug.push('auSection tag=' + (auSection.tagName || '').toLowerCase() + ' children=' + auSectionEls.length);
+          for (var ci = 0; ci < auSectionEls.length; ci++) {
+            var childEl = auSectionEls[ci];
             var headingPos = agentUsageHeading.compareDocumentPosition(childEl);
             if (!(headingPos & 4)) continue;
             if (childEl.children.length > 10) continue;
@@ -1040,7 +973,6 @@ export class ReplitScraper {
     var lastTimestamp: string | null = null;
     var index = 0;
     var expandedCount = 0;
-    var agentUsageExpandedCount = 0;
 
     // Step 3: Walk each container top-to-bottom
     for (var i = 0; i < totalContainers; i++) {
@@ -1066,45 +998,16 @@ export class ReplitScraper {
         }
       }
 
-      // 3b: Extract data from this element
+      // 3b: Expand Agent Usage before extraction so charge details are visible
+      await this.expandAgentUsageInElement(page, i);
+
+      // 3c: Extract data from this element
       var data = await this.extractElementData(page, i, lastTimestamp);
       if (!data) continue;
 
       if (data.timestamp) lastTimestamp = data.timestamp;
 
       if (data.entryType === 'work') {
-        var savedWorkData = {
-          timestamp: data.timestamp,
-          timeWorked: data.timeWorked,
-          durationSeconds: data.durationSeconds,
-          workDoneActions: data.workDoneActions,
-          itemsReadLines: data.itemsReadLines,
-          codeChangedPlus: data.codeChangedPlus,
-          codeChangedMinus: data.codeChangedMinus,
-          agentUsage: data.agentUsage,
-        };
-
-        var didExpandAU = await this.expandAgentUsageInElement(page, i);
-        if (didExpandAU) {
-          agentUsageExpandedCount++;
-          await page.waitForTimeout(1000);
-          var auData = await this.extractElementData(page, i, lastTimestamp);
-          if (auData && auData.chargeDetails && auData.chargeDetails.length > 0) {
-            data.chargeDetails = auData.chargeDetails;
-          }
-          if (auData && auData.chargeDebug) {
-            data.chargeDebug = auData.chargeDebug;
-          }
-          data.timestamp = savedWorkData.timestamp;
-          data.timeWorked = savedWorkData.timeWorked;
-          data.durationSeconds = savedWorkData.durationSeconds;
-          data.workDoneActions = savedWorkData.workDoneActions;
-          data.itemsReadLines = savedWorkData.itemsReadLines;
-          data.codeChangedPlus = savedWorkData.codeChangedPlus;
-          data.codeChangedMinus = savedWorkData.codeChangedMinus;
-          data.agentUsage = savedWorkData.agentUsage;
-        }
-
         if (data.chargeDebug) {
           console.log('  [Charge details debug] ' + data.chargeDebug);
         }
@@ -1149,7 +1052,6 @@ export class ReplitScraper {
 
     console.log(`\r  Processed ${totalContainers} elements`);
     if (expandedCount > 0) console.log(`  Expanded ${expandedCount} collapsed sections`);
-    if (agentUsageExpandedCount > 0) console.log(`  Expanded ${agentUsageExpandedCount} Agent Usage sections`);
 
     // Deduplication pass for messages
     var deduped: ChatMessage[] = [];
