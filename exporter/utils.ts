@@ -275,12 +275,10 @@ function buildGitCommitDescriptionMap(
     ...gc,
     parsed: parseTimestamp(gc.timestamp),
     originalIdx: idx,
-  })).filter(gc => gc.parsed !== null)
-    .sort((a, b) => b.parsed!.getTime() - a.parsed!.getTime());
-
-  if (parsedCommits.length === 0) return descriptionMap;
+  }));
 
   const usedCommitIndices = new Set<number>();
+  const MAX_MATCH_WINDOW_MS = 3 * 60 * 1000;
 
   const sortedCheckpoints = [...checkpoints]
     .filter(cp => cp.timestamp && cp.description)
@@ -291,32 +289,53 @@ function buildGitCommitDescriptionMap(
       return tb.getTime() - ta.getTime();
     });
 
-  const MAX_MATCH_WINDOW_MS = 3 * 60 * 1000;
-
   for (const cp of sortedCheckpoints) {
     if (!isSavedProgress(cp.description)) continue;
 
     const cpTime = parseTimestamp(cp.timestamp);
     if (!cpTime) continue;
 
-    let bestCommitIdx = -1;
-    let bestDiff = Infinity;
+    let matchedIdx = -1;
 
     for (let ci = 0; ci < parsedCommits.length; ci++) {
       if (usedCommitIndices.has(ci)) continue;
       const gc = parsedCommits[ci];
       if (isSavedProgress(gc.message) || isTransitioned(gc.message)) continue;
+      if (!gc.parsed) continue;
 
-      const diff = Math.abs(gc.parsed!.getTime() - cpTime.getTime());
-      if (diff <= MAX_MATCH_WINDOW_MS && diff < bestDiff) {
-        bestDiff = diff;
-        bestCommitIdx = ci;
+      const diff = Math.abs(gc.parsed.getTime() - cpTime.getTime());
+      if (diff <= MAX_MATCH_WINDOW_MS) {
+        matchedIdx = ci;
+        break;
       }
     }
 
-    if (bestCommitIdx >= 0) {
-      usedCommitIndices.add(bestCommitIdx);
-      descriptionMap.set(cp.index, parsedCommits[bestCommitIdx].message);
+    if (matchedIdx < 0) {
+      for (let ci = 0; ci < parsedCommits.length; ci++) {
+        if (usedCommitIndices.has(ci)) continue;
+        const gc = parsedCommits[ci];
+        if (isSavedProgress(gc.message) || isTransitioned(gc.message)) continue;
+
+        const nextIdx = ci + 1;
+        if (nextIdx < parsedCommits.length) {
+          const nextGc = parsedCommits[nextIdx];
+          if (nextGc.parsed && cpTime) {
+            const nextMsg = nextGc.message.toLowerCase();
+            if (nextMsg.indexOf('saved progress') >= 0) {
+              const diff = Math.abs(nextGc.parsed.getTime() - cpTime.getTime());
+              if (diff <= MAX_MATCH_WINDOW_MS) {
+                matchedIdx = ci;
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (matchedIdx >= 0) {
+      usedCommitIndices.add(matchedIdx);
+      descriptionMap.set(cp.index, parsedCommits[matchedIdx].message);
     }
   }
 
@@ -429,11 +448,7 @@ export function exportWorkTrackingCsv(exports: ReplExport[], outputDir: string):
           }
           if (bestMsg) {
             const content = bestMsg.content.replace(/\s+/g, ' ').trim();
-            const msgDesc = content.length > 100 ? content.substring(0, 100) + '...' : content;
-            if (!usedDescriptions.has(msgDesc)) {
-              description = msgDesc;
-              usedDescriptions.add(msgDesc);
-            }
+            description = content.length > 100 ? content.substring(0, 100) + '...' : content;
           }
         }
 
