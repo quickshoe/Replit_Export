@@ -246,11 +246,8 @@ export class ReplitScraper {
     console.log('Scrolling to load full chat history...');
     await this.scrollToLoadAll(page, chatContainer);
 
-    console.log('Expanding collapsed sections...');
-    await this.expandAllCollapsedSections(page);
-
-    console.log('Extracting chat data...');
-    const { messages, checkpoints, workEntries } = await this.extractChatData(page, outputDir);
+    console.log('Walking chat top-down: expanding and extracting line by line...');
+    const { messages, checkpoints, workEntries } = await this.walkAndExtract(page, outputDir);
 
     for (const cp of checkpoints) {
       cp.durationSeconds = calculateDuration(cp.timestamp, messages);
@@ -287,159 +284,156 @@ export class ReplitScraper {
     return result;
   }
 
-  private async expandAllCollapsedSections(page: Page): Promise<void> {
-    // STRATEGY: Every element we click gets marked with data-exporter-clicked="1"
-    // so subsequent passes NEVER re-click (and accidentally collapse) an element.
-    // All phases process elements in DOM order (top-to-bottom) so parent sections
-    // expand before their nested children (e.g. "Worked for" before "Agent Usage").
+  private async toggleTimestamps(page: Page): Promise<number> {
+    var total = 0;
+    for (var round = 0; round < 3; round++) {
+      var toggled = await page.evaluate(function() {
+        var count = 0;
+        var tsEls = document.querySelectorAll('[class*="Timestamp-module"], [class*="timestamp-module"]');
+        for (var i = 0; i < tsEls.length; i++) {
+          var el = tsEls[i];
+          var role = el.getAttribute('role');
+          var checked = el.getAttribute('aria-checked');
+          if (role === 'switch' && (checked === 'false' || checked === null)) {
+            var rect = el.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) {
+              if (el['click']) el['click']();
+              count++;
+            }
+          }
+        }
+        return count;
+      });
+      total += toggled;
+      if (toggled === 0) break;
+      await page.waitForTimeout(800);
+    }
+    return total;
+  }
 
-    // Phase 1: General expandable sections (ExpandableFeedContent, expandableButton, etc.)
-    var expandedCount = 0;
-    var maxRounds = 10;
+  private async expandSingleElement(page: Page, index: number): Promise<boolean> {
+    return await page.evaluate(function(idx) {
+      var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
+      if (idx >= containers.length) return false;
+      var el = containers[idx];
 
-    for (var round = 0; round < maxRounds; round++) {
-      var buttonsClicked = await page.evaluate(function() {
-        var clicked = 0;
-        var allCandidates = document.querySelectorAll(
-          '[class*="ExpandableFeedContent"], [class*="expandableButton"], ' +
-          'button[class*="expandable"], button[class*="Expandable"], ' +
-          '[class*="expandable"][role="button"], [class*="Expandable"][role="button"]'
-        );
-        for (var i = 0; i < allCandidates.length; i++) {
-          var btn = allCandidates[i];
-          if (btn.getAttribute('data-exporter-clicked') === '1') continue;
-          var ariaExpanded = btn.getAttribute('aria-expanded');
-          if (ariaExpanded === 'true') continue;
-          var text = (btn.textContent || '').trim();
-          if (text.indexOf('Agent Usage') >= 0) continue;
-          var rect = btn.getBoundingClientRect();
-          if (rect.width > 0 && rect.height > 0) {
-            btn.setAttribute('data-exporter-clicked', '1');
-            if (btn['click']) btn['click']();
+      var expandables = el.querySelectorAll(
+        '[class*="ExpandableFeedContent"], [class*="expandableButton"], ' +
+        'button[class*="expandable"], button[class*="Expandable"], ' +
+        '[class*="expandable"][role="button"], [class*="Expandable"][role="button"], ' +
+        'button[aria-expanded="false"], [role="button"][aria-expanded="false"]'
+      );
+
+      var clicked = 0;
+      for (var i = 0; i < expandables.length; i++) {
+        var btn = expandables[i];
+        if (btn.getAttribute('data-exporter-clicked') === '1') continue;
+        var ariaExp = btn.getAttribute('aria-expanded');
+        if (ariaExp === 'true') continue;
+        var text = (btn.textContent || '').trim();
+        if (text.indexOf('Agent Usage') >= 0) continue;
+        if (text.indexOf('Rollback') >= 0) continue;
+        if (text.indexOf('Preview') >= 0 && text.length < 30) continue;
+        var rect = btn.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          btn.setAttribute('data-exporter-clicked', '1');
+          if (btn['click']) btn['click']();
+          clicked++;
+        }
+      }
+
+      return clicked > 0;
+    }, index);
+  }
+
+  private async expandAgentUsageInElement(page: Page, index: number): Promise<boolean> {
+    return await page.evaluate(function(idx) {
+      var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
+      if (idx >= containers.length) return false;
+      var el = containers[idx];
+      var rawText = (el.textContent || '').trim();
+      if (rawText.indexOf('Agent Usage') < 0) return false;
+
+      var clicked = 0;
+
+      var allChildEls = el.querySelectorAll('*');
+      for (var i = 0; i < allChildEls.length; i++) {
+        var child = allChildEls[i];
+        var childText = (child.textContent || '').trim();
+        if (childText.indexOf('Agent Usage') < 0) continue;
+        if (childText.length > 200 || child.children.length > 5) continue;
+
+        var candidate = null as any;
+        var walker = child as any;
+        for (var up = 0; up < 8; up++) {
+          if (!walker) break;
+          var tag = walker.tagName ? walker.tagName.toLowerCase() : '';
+          var role = walker.getAttribute ? (walker.getAttribute('role') || '') : '';
+          var cls = walker.getAttribute ? (walker.getAttribute('class') || '') : '';
+          var isClickable = (tag === 'button' || tag === 'summary' || role === 'button' ||
+            cls.indexOf('expandable') >= 0 || cls.indexOf('Expandable') >= 0 ||
+            walker.getAttribute('aria-expanded') !== null);
+          if (isClickable && walker.getAttribute('data-exporter-clicked') !== '1') {
+            var cExp = walker.getAttribute('aria-expanded');
+            if (cExp !== 'true') { candidate = walker; break; }
+          }
+          walker = walker.parentElement;
+        }
+
+        if (!candidate && child.parentElement) {
+          var siblings = child.parentElement.children;
+          for (var si = 0; si < siblings.length; si++) {
+            var sib = siblings[si];
+            var sTag = sib.tagName ? sib.tagName.toLowerCase() : '';
+            var sRole = sib.getAttribute ? (sib.getAttribute('role') || '') : '';
+            var sCls = sib.getAttribute ? (sib.getAttribute('class') || '') : '';
+            if ((sTag === 'button' || sRole === 'button' ||
+                sCls.indexOf('expandable') >= 0 || sCls.indexOf('Expandable') >= 0 ||
+                sib.getAttribute('aria-expanded') !== null) &&
+                sib.getAttribute('data-exporter-clicked') !== '1') {
+              var sExp = sib.getAttribute('aria-expanded');
+              if (sExp !== 'true') { candidate = sib; break; }
+            }
+          }
+        }
+
+        if (!candidate) {
+          var childBtns = child.querySelectorAll('button, [role="button"], [aria-expanded]');
+          for (var cb = 0; cb < childBtns.length; cb++) {
+            if (childBtns[cb].getAttribute('data-exporter-clicked') !== '1') {
+              var cbExp = childBtns[cb].getAttribute('aria-expanded');
+              if (cbExp !== 'true') { candidate = childBtns[cb]; break; }
+            }
+          }
+        }
+
+        if (!candidate && child.nextElementSibling) {
+          var nextSib = child.nextElementSibling;
+          var nsTag = nextSib.tagName ? nextSib.tagName.toLowerCase() : '';
+          if (nsTag === 'button' || (nextSib.getAttribute && nextSib.getAttribute('role') === 'button')) {
+            if (nextSib.getAttribute('data-exporter-clicked') !== '1') candidate = nextSib;
+          } else {
+            var nsBtns = nextSib.querySelectorAll('button, [role="button"], [aria-expanded]');
+            for (var nb = 0; nb < nsBtns.length; nb++) {
+              if (nsBtns[nb].getAttribute('data-exporter-clicked') !== '1') { candidate = nsBtns[nb]; break; }
+            }
+          }
+        }
+
+        if (candidate) {
+          var cRect = candidate.getBoundingClientRect();
+          if (cRect.width > 0 && cRect.height > 0) {
+            candidate.setAttribute('data-exporter-clicked', '1');
+            if (candidate['click']) candidate['click']();
             clicked++;
           }
         }
-        return clicked;
-      });
+      }
 
-      if (buttonsClicked === 0) break;
-
-      expandedCount += buttonsClicked;
-      process.stdout.write(`\r  Expanded ${expandedCount} sections (round ${round + 1})...`);
-      await page.waitForTimeout(1500);
-    }
-
-    if (expandedCount > 0) {
-      console.log(`\n  Expanded ${expandedCount} collapsed sections`);
-    } else {
-      console.log('  No general collapsed sections found');
-    }
-
-    await page.waitForTimeout(1000);
-
-    // Phase 2: Agent Usage expand buttons
-    // The "Agent Usage" line has: label text, then an expand chevron button, then the dollar amount.
-    // We need to find the expand button NEAR the "Agent Usage" text — it could be a sibling,
-    // a child of the same parent, or the closest ancestor button/expandable.
-    console.log('  Expanding Agent Usage chevrons...');
-    var agentUsageExpanded = 0;
-    for (var auRound = 0; auRound < 5; auRound++) {
-      var auClicked = await page.evaluate(function() {
-        var clicked = 0;
-
-        // Strategy A: Walk all elements looking for ones containing "Agent Usage" text
-        // then find the nearest clickable expand trigger
-        var allEls = document.querySelectorAll('*');
-        var agentUsageNodes = [] as any[];
-        for (var i = 0; i < allEls.length; i++) {
-          var el = allEls[i];
-          if (el.children.length > 5) continue;
-          var elText = (el.textContent || '').trim();
-          if (elText.indexOf('Agent Usage') < 0) continue;
-          if (elText.length > 200) continue;
-          if (el.getAttribute('data-exporter-au-found') === '1') continue;
-          agentUsageNodes.push(el);
-        }
-
-        for (var ni = 0; ni < agentUsageNodes.length; ni++) {
-          var node = agentUsageNodes[ni];
-          node.setAttribute('data-exporter-au-found', '1');
-
-          // Walk up ancestors to find a clickable expand element
-          var candidate = null as any;
-          var walker = node;
-          for (var up = 0; up < 8; up++) {
-            if (!walker) break;
-            var tag = walker.tagName ? walker.tagName.toLowerCase() : '';
-            var role = walker.getAttribute ? (walker.getAttribute('role') || '') : '';
-            var cls = walker.getAttribute ? (walker.getAttribute('class') || '') : '';
-            var isClickable = (tag === 'button' || tag === 'summary' || role === 'button' ||
-              cls.indexOf('expandable') >= 0 || cls.indexOf('Expandable') >= 0 ||
-              walker.getAttribute('aria-expanded') !== null);
-            if (isClickable) {
-              candidate = walker;
-              break;
-            }
-            walker = walker.parentElement;
-          }
-
-          // Also check siblings of the node for expand buttons
-          if (!candidate && node.parentElement) {
-            var siblings = node.parentElement.children;
-            for (var si = 0; si < siblings.length; si++) {
-              var sib = siblings[si];
-              var sTag = sib.tagName ? sib.tagName.toLowerCase() : '';
-              var sRole = sib.getAttribute ? (sib.getAttribute('role') || '') : '';
-              var sCls = sib.getAttribute ? (sib.getAttribute('class') || '') : '';
-              if (sTag === 'button' || sRole === 'button' ||
-                  sCls.indexOf('expandable') >= 0 || sCls.indexOf('Expandable') >= 0 ||
-                  sib.getAttribute('aria-expanded') !== null) {
-                candidate = sib;
-                break;
-              }
-            }
-          }
-
-          // Also check child buttons of the node itself
-          if (!candidate) {
-            var childBtns = node.querySelectorAll('button, [role="button"], [aria-expanded]');
-            if (childBtns.length > 0) {
-              candidate = childBtns[0];
-            }
-          }
-
-          // Also check next sibling and its children
-          if (!candidate && node.nextElementSibling) {
-            var nextSib = node.nextElementSibling;
-            var nsTag = nextSib.tagName ? nextSib.tagName.toLowerCase() : '';
-            if (nsTag === 'button' || (nextSib.getAttribute && nextSib.getAttribute('role') === 'button')) {
-              candidate = nextSib;
-            } else {
-              var nsBtns = nextSib.querySelectorAll('button, [role="button"], [aria-expanded]');
-              if (nsBtns.length > 0) {
-                candidate = nsBtns[0];
-              }
-            }
-          }
-
-          if (candidate) {
-            if (candidate.getAttribute('data-exporter-clicked') === '1') continue;
-            var cExp = candidate.getAttribute('aria-expanded');
-            if (cExp === 'true') continue;
-            var cRect = candidate.getBoundingClientRect();
-            if (cRect.width > 0 && cRect.height > 0) {
-              candidate.setAttribute('data-exporter-clicked', '1');
-              if (candidate['click']) candidate['click']();
-              clicked++;
-            }
-          }
-        }
-
-        // Strategy B: Also try all buttons/expandables inside EndOfRunSummary containers
-        var endOfRunBtns = document.querySelectorAll(
+      if (clicked === 0) {
+        var endOfRunBtns = el.querySelectorAll(
           '[class*="EndOfRunSummary"] button, [class*="EndOfRunSummary"] [role="button"], ' +
-          '[class*="EndOfRunSummary"] [aria-expanded], [class*="endOfRun"] button, ' +
-          '[class*="endOfRun"] [role="button"], [class*="endOfRun"] [aria-expanded]'
+          '[class*="EndOfRunSummary"] [aria-expanded], [class*="endOfRun"] button'
         );
         for (var j = 0; j < endOfRunBtns.length; j++) {
           var ch = endOfRunBtns[j];
@@ -456,98 +450,260 @@ export class ReplitScraper {
             }
           }
         }
+      }
 
-        return clicked;
-      });
+      return clicked > 0;
+    }, index);
+  }
 
-      if (auClicked === 0) break;
-      agentUsageExpanded += auClicked;
-      await page.waitForTimeout(1500);
-    }
+  private async extractElementData(page: Page, index: number, lastTimestamp: string | null): Promise<any> {
+    return await page.evaluate(function(args) {
+      var idx = args.idx;
+      var prevTimestamp = args.prevTs;
+      var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
+      if (idx >= containers.length) return null;
 
-    if (agentUsageExpanded > 0) {
-      console.log(`  Expanded ${agentUsageExpanded} Agent Usage sections`);
-    } else {
-      console.log('  No Agent Usage chevrons found to expand');
-    }
+      var el = containers[idx];
+      var rawText = (el.textContent || '').trim();
+      if (rawText.length < 3) return null;
+      var innerRaw = ((el as any).innerText || rawText).trim();
 
-    await page.waitForTimeout(1000);
+      var evClass = (el.getAttribute('class') || '').toLowerCase();
+      var evEventType = (el.getAttribute('data-event-type') || '').toLowerCase();
+      var evCy = (el.getAttribute('data-cy') || '').toLowerCase();
 
-    // Phase 3: Checkpoint details
-    console.log('  Expanding checkpoint details...');
-    var checkpointExpanded = 0;
-    for (var cpRound = 0; cpRound < 3; cpRound++) {
-      var cpClicked = await page.evaluate(function() {
-        var clicked = 0;
-        var allEls = document.querySelectorAll('button, [role="button"], summary, details, [class*="expandable"], [class*="Expandable"], [aria-expanded]');
-        for (var i = 0; i < allEls.length; i++) {
-          var el = allEls[i];
-          if (el.getAttribute('data-exporter-clicked') === '1') continue;
-          var text = (el.textContent || '').trim();
-          if (text.indexOf('Checkpoint made') >= 0 || text.indexOf('checkpoint made') >= 0) {
-            var ariaExp = el.getAttribute('aria-expanded');
-            if (ariaExp === 'true') continue;
-            var rect = el.getBoundingClientRect();
-            if (rect.width > 0 && rect.height > 0) {
-              el.setAttribute('data-exporter-clicked', '1');
-              if (el['click']) el['click']();
-              clicked++;
+      var relativePattern = /^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i;
+
+      var timestamp = null as any;
+      var tsModuleEls = el.querySelectorAll('[class*="Timestamp-module"], [class*="timestamp-module"]');
+      for (var tmi = 0; tmi < tsModuleEls.length; tmi++) {
+        var tmText = (tsModuleEls[tmi].textContent || '').trim();
+        if (tmText.length > 0 && tmText.length < 100 && !relativePattern.test(tmText)) {
+          timestamp = tmText;
+          break;
+        }
+      }
+      if (!timestamp) {
+        var timeEl = el.querySelector('time');
+        if (timeEl) {
+          var dt = timeEl.getAttribute('datetime');
+          if (dt) timestamp = dt;
+          else {
+            var tt = (timeEl.textContent || '').trim();
+            if (tt.length > 0 && tt.length < 100) timestamp = tt;
+          }
+        }
+      }
+      if (!timestamp) {
+        var realTsMatch = rawText.match(/(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})/i);
+        if (realTsMatch) timestamp = realTsMatch[1];
+      }
+      if (!timestamp) {
+        var relMatch = rawText.match(/(\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago)/i);
+        if (relMatch) timestamp = relMatch[1];
+      }
+      if (!timestamp) timestamp = prevTimestamp;
+
+      var innerUserMarker = el.querySelector('[data-cy="user-message"], [data-event-type="user-message"], [class*="userMessage"], [class*="UserMessage"]');
+      var innerCheckpointMarker = el.querySelector('[class*="checkpoint"], [class*="Checkpoint"], [data-event-type*="checkpoint"]');
+
+      var endOfRunRoot = el.querySelector('[class*="EndOfRunSummary"]');
+      if (!endOfRunRoot) {
+        var ownClass = el.getAttribute('class') || '';
+        if (ownClass.indexOf('EndOfRunSummary') >= 0) endOfRunRoot = el;
+      }
+      var workedMatch = rawText.match(/Worked\s+for\s+(\d+\s*(?:second|minute|hour|day|week|month|year)s?(?:\s*(?:and\s*)?\d+\s*(?:second|minute|hour|day|week|month|year)s?)*)/i);
+
+      if (endOfRunRoot || workedMatch) {
+        var wDuration = workedMatch ? workedMatch[1] : '';
+        var wDurationSecs = 0;
+        if (wDuration) {
+          var durParts = wDuration.match(/(\d+)\s*(second|minute|hour|day|week|month|year)s?/gi);
+          if (durParts) {
+            for (var dp = 0; dp < durParts.length; dp++) {
+              var durMatch = durParts[dp].match(/(\d+)\s*(second|minute|hour|day|week|month|year)/i);
+              if (durMatch) {
+                var durVal = parseInt(durMatch[1], 10);
+                var durUnit = durMatch[2].toLowerCase();
+                if (durUnit === 'second') wDurationSecs += durVal;
+                else if (durUnit === 'minute') wDurationSecs += durVal * 60;
+                else if (durUnit === 'hour') wDurationSecs += durVal * 3600;
+                else if (durUnit === 'day') wDurationSecs += durVal * 86400;
+              }
             }
           }
         }
-        return clicked;
-      });
 
-      if (cpClicked === 0) break;
-      checkpointExpanded += cpClicked;
-      await page.waitForTimeout(1500);
-    }
+        var actionsMatch = rawText.match(/(\d+)\s*actions?/i);
+        var workDoneActions = actionsMatch ? parseInt(actionsMatch[1], 10) : null;
+        var itemsMatch = rawText.match(/(\d+)\s*lines/i);
+        var itemsReadLines = itemsMatch ? parseInt(itemsMatch[1], 10) : null;
+        var codePlusMatch = rawText.match(/\+(\d+)/);
+        var codeMinusMatch = rawText.match(/-(\d+)/);
+        var codeChangedPlus = codePlusMatch ? parseInt(codePlusMatch[1], 10) : null;
+        var codeChangedMinus = codeMinusMatch ? parseInt(codeMinusMatch[1], 10) : null;
 
-    if (checkpointExpanded > 0) {
-      console.log(`  Expanded ${checkpointExpanded} checkpoint sections`);
-    } else {
-      console.log('  No checkpoint sections found to expand');
-    }
+        var totalCharge = null as any;
+        var costMatches = rawText.match(/\$[\d.]+/g);
+        if (costMatches && costMatches.length > 0) {
+          totalCharge = parseFloat(costMatches[0].substring(1));
+          if (isNaN(totalCharge)) totalCharge = null;
+        }
 
-    await page.waitForTimeout(1000);
-
-    // Phase 4: Toggle ALL timestamp switches from relative ("4 days ago") to absolute ("3:49 pm, Feb 03, 2026")
-    // These are <span> elements with class Timestamp-module and role="switch" aria-checked="false"
-    // We run multiple rounds because expanding sections can reveal new timestamps
-    console.log('  Toggling timestamps to absolute format...');
-    var totalTimestampsToggled = 0;
-    for (var tsRound = 0; tsRound < 3; tsRound++) {
-      var timestampsToggled = await page.evaluate(function() {
-        var toggled = 0;
-        var tsEls = document.querySelectorAll('[class*="Timestamp-module"], [class*="timestamp-module"]');
-        for (var i = 0; i < tsEls.length; i++) {
-          var el = tsEls[i];
-          var role = el.getAttribute('role');
-          var checked = el.getAttribute('aria-checked');
-          if (role === 'switch' && (checked === 'false' || checked === null)) {
-            var rect = el.getBoundingClientRect();
-            if (rect.width > 0 && rect.height > 0) {
-              if (el['click']) el['click']();
-              toggled++;
-            }
+        var chargeDetails = [] as any[];
+        var searchRoot = endOfRunRoot || el;
+        var agentUsageHeading = null as any;
+        var allChildEls = searchRoot.querySelectorAll('*');
+        for (var hi = 0; hi < allChildEls.length; hi++) {
+          var hEl = allChildEls[hi];
+          var hText = (hEl.textContent || '').trim();
+          if (hText.indexOf('Agent Usage') >= 0 && hText.length < 50) {
+            agentUsageHeading = hEl;
           }
         }
-        return toggled;
-      });
 
-      totalTimestampsToggled += timestampsToggled;
-      if (timestampsToggled === 0) break;
-      await page.waitForTimeout(1000);
-    }
+        if (agentUsageHeading) {
+          var labelCandidates = [] as any[];
+          var amountCandidates = [] as any[];
+          for (var ci = 0; ci < allChildEls.length; ci++) {
+            var childEl = allChildEls[ci];
+            var headingPos = agentUsageHeading.compareDocumentPosition(childEl);
+            if (!(headingPos & 4)) continue;
+            if (childEl.children.length > 3) continue;
+            var childText = (childEl.textContent || '').trim();
+            if (childText.length === 0) continue;
+            var amtMatch = childText.match(/^\$([\d.]+)$/);
+            if (amtMatch) {
+              amountCandidates.push({ el: childEl, amount: parseFloat(amtMatch[1]), text: childText, rect: childEl.getBoundingClientRect() });
+              continue;
+            }
+            if (childText.length > 2 && childText.length < 150 && childText.indexOf('$') < 0) {
+              var lowerText = childText.toLowerCase();
+              if (lowerText === 'agent usage') continue;
+              labelCandidates.push({ el: childEl, text: childText, rect: childEl.getBoundingClientRect() });
+            }
+          }
 
-    if (totalTimestampsToggled > 0) {
-      console.log(`  Toggled ${totalTimestampsToggled} timestamps to absolute format`);
-      await page.waitForTimeout(1000);
-    } else {
-      console.log('  No timestamp switches found to toggle');
-    }
+          var usedLabels = {} as any;
+          for (var ami = 0; ami < amountCandidates.length; ami++) {
+            var amt = amountCandidates[ami];
+            var bestLabel = null as any;
+            var bestDistance = 999999;
+            for (var li = 0; li < labelCandidates.length; li++) {
+              var lbl = labelCandidates[li];
+              if (usedLabels[li]) continue;
+              var pos = lbl.el.compareDocumentPosition(amt.el);
+              if (pos & 4) {
+                var vDist = Math.abs(amt.rect.top - lbl.rect.top);
+                if (vDist < bestDistance && vDist < 100) {
+                  bestDistance = vDist;
+                  bestLabel = { index: li, text: lbl.text };
+                }
+              }
+            }
+            if (bestLabel) {
+              usedLabels[bestLabel.index] = true;
+              var cleanLabel = bestLabel.text.replace(/\s+/g, ' ').trim();
+              if (!isNaN(amt.amount) && amt.amount > 0) {
+                chargeDetails.push({ label: cleanLabel, amount: amt.amount });
+              }
+            }
+          }
 
-    await page.waitForTimeout(500);
+          if (chargeDetails.length > 1 && totalCharge !== null) {
+            var filtered = [] as any[];
+            var removedTotal = false;
+            for (var fi = 0; fi < chargeDetails.length; fi++) {
+              if (!removedTotal && Math.abs(chargeDetails[fi].amount - totalCharge) < 0.005) {
+                removedTotal = true;
+                continue;
+              }
+              filtered.push(chargeDetails[fi]);
+            }
+            if (filtered.length > 0) chargeDetails = filtered;
+          }
+        }
+
+        return {
+          entryType: 'work',
+          timestamp: timestamp,
+          timeWorked: wDuration || '',
+          durationSeconds: wDurationSecs > 0 ? wDurationSecs : null,
+          workDoneActions: workDoneActions,
+          itemsReadLines: itemsReadLines,
+          codeChangedPlus: codeChangedPlus,
+          codeChangedMinus: codeChangedMinus,
+          agentUsage: totalCharge,
+          chargeDetails: chargeDetails
+        };
+      }
+
+      var isCheckpoint = evClass.indexOf('checkpoint') >= 0 ||
+        evEventType.indexOf('checkpoint') >= 0 ||
+        innerCheckpointMarker !== null ||
+        (rawText.indexOf('Checkpoint') >= 0 && rawText.length < 500);
+
+      if (isCheckpoint) {
+        var cpTimestamp = null as any;
+        var cpRealTsMatch = rawText.match(/(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})/i);
+        if (cpRealTsMatch) cpTimestamp = cpRealTsMatch[1];
+        if (!cpTimestamp) cpTimestamp = timestamp;
+
+        var cpDescription = '';
+        var cpDescMatchAbs = rawText.match(/Checkpoint\s+made\s*([\s\S]*?)(?:\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4}|\s*Rollback|\s*Preview|\s*Changes|$)/i);
+        if (cpDescMatchAbs && cpDescMatchAbs[1]) {
+          var descCandidate = cpDescMatchAbs[1].trim();
+          if (descCandidate && !descCandidate.match(/^\d+\s+(?:second|minute|hour|day|week|month|year)s?\s*ago\s*$/i)) {
+            cpDescription = descCandidate;
+          }
+        }
+        if (!cpDescription) {
+          var cpDescMatchRel = rawText.match(/Checkpoint\s+made[\s\S]*?ago\s*([\s\S]*?)(?:\d{1,2}:\d{2}\s*(?:am|pm)|\s*Rollback|\s*Preview|\s*Changes|$)/i);
+          if (cpDescMatchRel && cpDescMatchRel[1]) cpDescription = cpDescMatchRel[1].trim();
+        }
+        if (!cpDescription) {
+          cpDescription = rawText
+            .replace(/Checkpoint\s+made\s*/i, '')
+            .replace(/\d+\s+(?:second|minute|hour|day|week|month|year)s?\s*ago\s*/i, '')
+            .replace(/\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4}/gi, '')
+            .replace(/Rollback\s+here/gi, '').replace(/Preview/gi, '').replace(/Changes/gi, '').trim();
+        }
+
+        var costMatch = rawText.match(/\$[\d.]+/);
+        return {
+          entryType: 'checkpoint',
+          timestamp: cpTimestamp,
+          description: cpDescription.substring(0, 1000),
+          cost: costMatch ? costMatch[0] : null
+        };
+      }
+
+      var cleanedText = rawText.replace(/\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*$/i, '').trim();
+      cleanedText = cleanedText.replace(/^\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*/i, '').trim();
+      var cleanedInner = innerRaw.replace(/\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*$/i, '').trim();
+      cleanedInner = cleanedInner.replace(/^\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*/i, '').trim();
+
+      if (cleanedText.length < 5) return null;
+      if (cleanedText.match(/^Worked\s+for\s+/i)) return null;
+      if (cleanedText.match(/^Decided\s+on\s+/i) && cleanedText.length < 100) return null;
+      if (cleanedText.match(/^\d+\s+actions?\s*$/i)) return null;
+      if (cleanedText.match(/^Created task list\s*$/i)) return null;
+      if (cleanedText.match(/^Ready to share\?\s*Publish/i)) return null;
+
+      var isUser = evClass.indexOf('usermessage') >= 0 ||
+        evClass.indexOf('user-message') >= 0 ||
+        evEventType === 'user-message' ||
+        evCy === 'user-message' ||
+        innerUserMarker !== null;
+
+      return {
+        entryType: 'message',
+        type: isUser ? 'user' : 'agent',
+        content: cleanedInner.substring(0, 10000),
+        contentKey: cleanedText.substring(0, 200),
+        timestamp: timestamp
+      };
+    }, { idx: index, prevTs: lastTimestamp });
   }
 
   private async findChatContainer(page: Page): Promise<string | null> {
@@ -753,259 +909,154 @@ export class ReplitScraper {
     return clicked;
   }
 
-  private async dumpDomStructure(page: Page, outputDir: string): Promise<void> {
-    var domInfo = await page.evaluate(function() {
-      var info = {
-        containers: [] as any[],
-        sampleElements: [] as any[],
-        bodyClasses: document.body.getAttribute('class') || '',
-        url: window.location.href,
-        timeElements: [] as any[],
-        endOfRunSamples: [] as any[],
-        agentUsageSamples: [] as any[]
-      };
+  private async walkAndExtract(page: Page, _outputDir: string = './exports'): Promise<{ messages: ChatMessage[]; checkpoints: Checkpoint[]; workEntries: WorkEntry[] }> {
+    // Step 1: Toggle all timestamps to absolute format before processing
+    console.log('  Toggling timestamps to absolute format...');
+    var tsToggled = await this.toggleTimestamps(page);
+    if (tsToggled > 0) {
+      console.log(`  Toggled ${tsToggled} timestamps to absolute format`);
+    }
 
-      var allEls = document.querySelectorAll('div, section, main, article');
-      for (var i = 0; i < allEls.length; i++) {
-        var el = allEls[i];
-        var style = window.getComputedStyle(el);
-        var isScrollable = style.overflowY === 'scroll' || style.overflowY === 'auto';
-        var childCount = el.children.length;
-        if (isScrollable && childCount > 3) {
-          var childSamples = [] as any[];
-          for (var j = 0; j < Math.min(5, childCount); j++) {
-            var child = el.children[j];
-            childSamples.push({
-              tag: child.tagName,
-              className: (child.getAttribute('class') || '').substring(0, 200),
-              dataTestId: child.getAttribute('data-testid') || '',
-              dataCy: child.getAttribute('data-cy') || '',
-              dataEventType: child.getAttribute('data-event-type') || '',
-              role: child.getAttribute('role') || '',
-              childCount: child.children.length,
-              textLength: (child.textContent || '').trim().length,
-              textPreview: (child.textContent || '').trim().substring(0, 150),
-              outerHTMLPreview: child.outerHTML.substring(0, 500)
-            });
-          }
-          info.containers.push({
-            tag: el.tagName,
-            className: (el.getAttribute('class') || '').substring(0, 200),
-            dataTestId: el.getAttribute('data-testid') || '',
-            role: el.getAttribute('role') || '',
-            childCount: childCount,
-            scrollHeight: el.scrollHeight,
-            clientHeight: el.clientHeight,
-            childSamples: childSamples
-          });
-        }
-      }
-
-      var chatPatterns = [
-        '[role="log"]', '[role="list"]', '[role="listitem"]',
-        '[data-testid*="message"]', '[data-testid*="chat"]', '[data-testid*="turn"]',
-        '[data-cy*="message"]', '[data-event-type]',
-        '[class*="Message"]', '[class*="message"]', '[class*="Chat"]', '[class*="chat"]',
-        '[class*="EventContainer"]', '[class*="eventContainer"]',
-        '[class*="Turn"]', '[class*="turn"]', '[class*="Checkpoint"]', '[class*="checkpoint"]',
-        '[class*="Thread"]', '[class*="thread"]', '[class*="Conversation"]'
-      ];
-      for (var k = 0; k < chatPatterns.length; k++) {
-        var matches = document.querySelectorAll(chatPatterns[k]);
-        if (matches.length > 0) {
-          for (var m = 0; m < Math.min(3, matches.length); m++) {
-            info.sampleElements.push({
-              selector: chatPatterns[k],
-              matchCount: matches.length,
-              tag: matches[m].tagName,
-              className: (matches[m].getAttribute('class') || '').substring(0, 200),
-              dataTestId: matches[m].getAttribute('data-testid') || '',
-              dataCy: matches[m].getAttribute('data-cy') || '',
-              dataEventType: matches[m].getAttribute('data-event-type') || '',
-              role: matches[m].getAttribute('role') || '',
-              textPreview: (matches[m].textContent || '').trim().substring(0, 150),
-              outerHTMLPreview: matches[m].outerHTML.substring(0, 500)
-            });
-          }
-        }
-      }
-
-      var timeEls = document.querySelectorAll('time, [datetime], [class*="timestamp"], [class*="Timestamp"], [class*="Timestamp-module"], [class*="timeAgo"], [class*="TimeAgo"], [class*="relativeTime"]');
-      for (var ti = 0; ti < Math.min(15, timeEls.length); ti++) {
-        info.timeElements.push({
-          tag: timeEls[ti].tagName,
-          className: (timeEls[ti].getAttribute('class') || '').substring(0, 200),
-          datetime: timeEls[ti].getAttribute('datetime') || '',
-          title: timeEls[ti].getAttribute('title') || '',
-          role: timeEls[ti].getAttribute('role') || '',
-          ariaChecked: timeEls[ti].getAttribute('aria-checked') || '',
-          textContent: (timeEls[ti].textContent || '').trim().substring(0, 100),
-          outerHTML: timeEls[ti].outerHTML.substring(0, 500),
-          parentClass: (timeEls[ti].parentElement ? (timeEls[ti].parentElement as Element).getAttribute('class') || '' : '').substring(0, 200)
-        });
-      }
-
-      var endOfRunEls = document.querySelectorAll('[class*="EndOfRunSummary"], [class*="endOfRun"]');
-      for (var eri = 0; eri < Math.min(3, endOfRunEls.length); eri++) {
-        var erEl = endOfRunEls[eri];
-        info.endOfRunSamples.push({
-          className: (erEl.getAttribute('class') || '').substring(0, 300),
-          textContent: (erEl.textContent || '').trim().substring(0, 500),
-          innerHTML: erEl.innerHTML.substring(0, 2000),
-          childCount: erEl.children.length
-        });
-      }
-
-      var agentUsageEls = document.querySelectorAll('[class*="EndOfRunSummary"] [aria-expanded], [class*="endOfRun"] [aria-expanded]');
-      for (var aui = 0; aui < Math.min(5, agentUsageEls.length); aui++) {
-        var auEl = agentUsageEls[aui];
-        var auParent = auEl.parentElement;
-        info.agentUsageSamples.push({
-          className: (auEl.getAttribute('class') || '').substring(0, 300),
-          ariaExpanded: auEl.getAttribute('aria-expanded'),
-          textContent: (auEl.textContent || '').trim().substring(0, 200),
-          outerHTML: auEl.outerHTML.substring(0, 500),
-          parentInnerHTML: auParent ? auParent.innerHTML.substring(0, 2000) : '',
-          nextSiblingHTML: auEl.nextElementSibling ? auEl.nextElementSibling.outerHTML.substring(0, 1000) : ''
-        });
-      }
-
-      return info;
+    // Step 2: Count total event containers
+    var totalContainers = await page.evaluate(function() {
+      return document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]').length;
     });
+    console.log(`  Found ${totalContainers} event containers to process`);
 
-    var debugPath = path.join(outputDir, 'dom-debug.json');
-    fs.writeFileSync(debugPath, JSON.stringify(domInfo, null, 2), 'utf-8');
-    console.log(`  DOM debug info saved to: ${debugPath}`);
-    console.log(`  Debug stats: ${domInfo.timeElements.length} time elements, ${domInfo.endOfRunSamples.length} EndOfRunSummary elements, ${domInfo.agentUsageSamples.length} expandable Agent Usage elements`);
+    if (totalContainers === 0) {
+      console.log('  No event containers found. Trying fallback selectors...');
+      return this.fallbackExtract(page);
+    }
+
+    var messages: ChatMessage[] = [];
+    var checkpoints: Checkpoint[] = [];
+    var workEntries: WorkEntry[] = [];
+    var seenKeys: Record<string, boolean> = {};
+    var lastTimestamp: string | null = null;
+    var index = 0;
+    var expandedCount = 0;
+    var agentUsageExpandedCount = 0;
+
+    // Step 3: Walk each container top-to-bottom
+    for (var i = 0; i < totalContainers; i++) {
+      if (i % 25 === 0 && i > 0) {
+        process.stdout.write(`\r  Processing element ${i}/${totalContainers}...`);
+      }
+
+      // 3a: Expand this element's collapsed sections (if any)
+      var didExpand = await this.expandSingleElement(page, i);
+      if (didExpand) {
+        expandedCount++;
+        await page.waitForTimeout(800);
+
+        // After expanding, toggle any newly revealed timestamps
+        await this.toggleTimestamps(page);
+
+        // Re-count containers in case expansion changed the DOM
+        var newTotal = await page.evaluate(function() {
+          return document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]').length;
+        });
+        if (newTotal !== totalContainers) {
+          totalContainers = newTotal;
+        }
+      }
+
+      // 3b: Extract data from this element
+      var data = await this.extractElementData(page, i, lastTimestamp);
+      if (!data) continue;
+
+      if (data.timestamp) lastTimestamp = data.timestamp;
+
+      if (data.entryType === 'work') {
+        // 3c: For work entries, now expand Agent Usage within this element
+        var didExpandAU = await this.expandAgentUsageInElement(page, i);
+        if (didExpandAU) {
+          agentUsageExpandedCount++;
+          await page.waitForTimeout(800);
+          // Re-extract after Agent Usage expansion to get charge details
+          data = await this.extractElementData(page, i, lastTimestamp);
+          if (!data) continue;
+        }
+
+        workEntries.push({
+          timestamp: data.timestamp,
+          timeWorked: data.timeWorked || '',
+          durationSeconds: data.durationSeconds,
+          workDoneActions: data.workDoneActions,
+          itemsReadLines: data.itemsReadLines,
+          codeChangedPlus: data.codeChangedPlus,
+          codeChangedMinus: data.codeChangedMinus,
+          agentUsage: data.agentUsage,
+          chargeDetails: data.chargeDetails || [],
+          index: index++
+        });
+      } else if (data.entryType === 'checkpoint') {
+        checkpoints.push({
+          timestamp: data.timestamp,
+          description: data.description || '',
+          cost: data.cost,
+          durationSeconds: null,
+          index: index++
+        });
+      } else if (data.entryType === 'message') {
+        var contentKey = data.contentKey || data.content.substring(0, 200);
+        if (seenKeys[contentKey]) continue;
+        seenKeys[contentKey] = true;
+
+        messages.push({
+          type: data.type,
+          content: data.content,
+          timestamp: data.timestamp,
+          index: index++
+        });
+      }
+    }
+
+    console.log(`\r  Processed ${totalContainers} elements`);
+    if (expandedCount > 0) console.log(`  Expanded ${expandedCount} collapsed sections`);
+    if (agentUsageExpandedCount > 0) console.log(`  Expanded ${agentUsageExpandedCount} Agent Usage sections`);
+
+    // Deduplication pass for messages
+    var deduped: ChatMessage[] = [];
+    for (var d1 = 0; d1 < messages.length; d1++) {
+      var isDuplicate = false;
+      var m1 = messages[d1].content;
+      for (var d2 = 0; d2 < messages.length; d2++) {
+        if (d1 === d2) continue;
+        var m2 = messages[d2].content;
+        if (m2.length > m1.length && m2.includes(m1)) {
+          isDuplicate = true;
+          break;
+        }
+        if (m1 === m2 && d1 > d2) {
+          isDuplicate = true;
+          break;
+        }
+      }
+      if (!isDuplicate) deduped.push(messages[d1]);
+    }
+    for (var ri = 0; ri < deduped.length; ri++) {
+      deduped[ri].index = ri;
+    }
+
+    // If primary strategy found very few messages, try fallback
+    if (deduped.length < 3) {
+      console.log('  Few messages found, trying fallback extraction...');
+      var fallback = await this.fallbackExtract(page);
+      if (fallback.messages.length > deduped.length) {
+        return fallback;
+      }
+    }
+
+    return { messages: deduped, checkpoints, workEntries };
   }
 
-  private async extractChatData(page: Page, outputDir: string = './exports'): Promise<{ messages: ChatMessage[]; checkpoints: Checkpoint[]; workEntries: WorkEntry[] }> {
-    try {
-      await this.dumpDomStructure(page, outputDir);
-    } catch (err) {
-      console.log('  Note: Could not dump DOM structure for debugging');
-    }
+  private async fallbackExtract(page: Page): Promise<{ messages: ChatMessage[]; checkpoints: Checkpoint[]; workEntries: WorkEntry[] }> {
+    var data = await page.evaluate(function() {
+      var messages = [] as any[];
+      var seenKeys = {} as any;
+      var index = 0;
 
-    // Re-toggle any timestamps that may have loaded after initial toggle
-    // (lazy-loaded content from scroll or section expansion)
-    var lateToggles = await page.evaluate(function() {
-      var toggled = 0;
-      var tsEls = document.querySelectorAll('[class*="Timestamp-module"], [class*="timestamp-module"]');
-      for (var i = 0; i < tsEls.length; i++) {
-        var el = tsEls[i];
-        var role = el.getAttribute('role');
-        var checked = el.getAttribute('aria-checked');
-        if (role === 'switch' && (checked === 'false' || checked === null)) {
-          var rect = el.getBoundingClientRect();
-          if (rect.width > 0 && rect.height > 0) {
-            if (el['click']) el['click']();
-            toggled++;
-          }
-        }
-      }
-      return toggled;
-    });
-    if (lateToggles > 0) {
-      console.log(`  Toggled ${lateToggles} additional late-loaded timestamps`);
-      await page.waitForTimeout(1000);
-    }
-
-    // Pre-compute timestamps for all event containers in a separate evaluate
-    // to avoid nested function definitions inside page.evaluate (ES5 safety)
-    var timestampMap = await page.evaluate(function() {
-      var results = {} as any;
-      var selectors = '[class*="eventContainer"], [class*="EventContainer"], [data-event-type]';
-      var containers = document.querySelectorAll(selectors);
-
-      for (var idx = 0; idx < containers.length; idx++) {
-        var el = containers[idx];
-
-        // Helper pattern: matches relative timestamps like "4 days ago", "2 hours ago"
-        var relativePattern = /^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i;
-
-        // 1. Timestamp-module span elements (Replit's actual timestamp components)
-        // After toggling, these contain absolute timestamps like "3:49 pm, Feb 03, 2026"
-        // If still showing relative text ("4 days ago"), skip — we prefer absolute
-        var tsModuleEls = el.querySelectorAll('[class*="Timestamp-module"], [class*="timestamp-module"]');
-        var foundAbsoluteTs = false;
-        var foundRelativeTs = null as any;
-        for (var tmi = 0; tmi < tsModuleEls.length; tmi++) {
-          var tmText = (tsModuleEls[tmi].textContent || '').trim();
-          if (tmText.length > 0 && tmText.length < 100) {
-            if (!relativePattern.test(tmText)) {
-              results[idx] = tmText;
-              foundAbsoluteTs = true;
-              break;
-            } else {
-              foundRelativeTs = tmText;
-            }
-          }
-        }
-        if (foundAbsoluteTs) continue;
-
-        // 2. <time> element inside (fallback for other UIs)
-        var timeEl = el.querySelector('time');
-        if (timeEl) {
-          var dt = timeEl.getAttribute('datetime');
-          if (dt) { results[idx] = dt; continue; }
-          var tt = (timeEl.textContent || '').trim();
-          if (tt.length > 0 && tt.length < 100) { results[idx] = tt; continue; }
-        }
-
-        // 3. Own datetime/title attribute
-        var elDatetime = el.getAttribute('datetime');
-        if (elDatetime) { results[idx] = elDatetime; continue; }
-        var elTitle = el.getAttribute('title');
-        if (elTitle && elTitle.match(/\d{4}/)) { results[idx] = elTitle; continue; }
-
-        // 4. Real absolute timestamp pattern in own text: "3:49 pm, Feb 03, 2026"
-        var rawText = (el.textContent || '');
-        var realTsMatch = rawText.match(/(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})/i);
-        if (realTsMatch) { results[idx] = realTsMatch[1]; continue; }
-
-        // 5. Timestamp CSS class descendants (broader search, prefer absolute)
-        var tsEls = el.querySelectorAll('[class*="timestamp"], [class*="Timestamp"], [class*="timeAgo"], [class*="TimeAgo"], [class*="relativeTime"]');
-        var foundTsClass = false;
-        for (var tsi = 0; tsi < tsEls.length; tsi++) {
-          var tsText = (tsEls[tsi].textContent || '').trim();
-          if (tsText.length > 0 && tsText.length < 100 && !relativePattern.test(tsText)) {
-            results[idx] = tsText;
-            foundTsClass = true;
-            break;
-          }
-        }
-        if (foundTsClass) continue;
-
-        // 6. ISO timestamp
-        var isoMatch = rawText.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/);
-        if (isoMatch) { results[idx] = isoMatch[1]; continue; }
-
-        // 7. Relative time as last resort (only if nothing else found)
-        if (foundRelativeTs) { results[idx] = foundRelativeTs; continue; }
-        var relMatch = rawText.match(/(\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago)/i);
-        if (relMatch) { results[idx] = relMatch[1]; continue; }
-
-        // No timestamp found for this container - will be filled by backward walk below
-      }
-
-      // Backward walk: for containers without timestamps, inherit from nearest
-      // previous container that has one. This handles work entries / "Worked for X"
-      // blocks that don't have their own timestamp element.
-      var lastKnownTs = null as any;
-      for (var bw = 0; bw < containers.length; bw++) {
-        if (results[bw]) {
-          lastKnownTs = results[bw];
-        } else if (lastKnownTs) {
-          results[bw] = lastKnownTs;
-        }
-      }
-
-      return results;
-    });
-
-    // Also pre-compute timestamps for fallback selectors
-    var fallbackTimestampMap = await page.evaluate(function() {
-      var results = {} as any;
       var broadSelectors = [
         '[data-cy*="message"]',
         '[data-event-type*="message"]',
@@ -1018,475 +1069,74 @@ export class ReplitScraper {
       var selectorStr = broadSelectors.join(', ');
       var els = document.querySelectorAll(selectorStr);
 
-      for (var idx = 0; idx < els.length; idx++) {
-        var el = els[idx];
+      for (var bi = 0; bi < els.length; bi++) {
+        var bEl = els[bi];
+        var bRaw = (bEl.textContent || '').trim();
+        var bInner = ((bEl as any).innerText || bRaw).trim();
+
+        var bClean = bRaw.replace(/\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*$/i, '').trim();
+        bClean = bClean.replace(/^\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*/i, '').trim();
+        if (bClean.length < 5) continue;
+
+        var bCleanInner = bInner.replace(/\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*$/i, '').trim();
+        bCleanInner = bCleanInner.replace(/^\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*/i, '').trim();
+
+        var bKey = bClean.substring(0, 200);
+        if (seenKeys[bKey]) continue;
+        seenKeys[bKey] = true;
 
         var relativePattern = /^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i;
-
-        // 1. Timestamp-module span elements (prefer absolute over relative)
-        var tsModuleEls = el.querySelectorAll('[class*="Timestamp-module"], [class*="timestamp-module"]');
-        var foundAbsoluteTs = false;
-        var foundRelativeTs = null as any;
+        var timestamp = null as any;
+        var tsModuleEls = bEl.querySelectorAll('[class*="Timestamp-module"]');
         for (var tmi = 0; tmi < tsModuleEls.length; tmi++) {
           var tmText = (tsModuleEls[tmi].textContent || '').trim();
-          if (tmText.length > 0 && tmText.length < 100) {
-            if (!relativePattern.test(tmText)) {
-              results[idx] = tmText;
-              foundAbsoluteTs = true;
-              break;
-            } else {
-              foundRelativeTs = tmText;
-            }
-          }
-        }
-        if (foundAbsoluteTs) continue;
-
-        // 2. <time> element (fallback)
-        var timeEl = el.querySelector('time');
-        if (timeEl) {
-          var dt = timeEl.getAttribute('datetime');
-          if (dt) { results[idx] = dt; continue; }
-          var tt = (timeEl.textContent || '').trim();
-          if (tt.length > 0 && tt.length < 100) { results[idx] = tt; continue; }
-        }
-
-        var elDatetime = el.getAttribute('datetime');
-        if (elDatetime) { results[idx] = elDatetime; continue; }
-        var elTitle = el.getAttribute('title');
-        if (elTitle && elTitle.match(/\d{4}/)) { results[idx] = elTitle; continue; }
-
-        // 3. Real absolute timestamp pattern in own text
-        var rawText = (el.textContent || '');
-        var realTsMatch = rawText.match(/(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})/i);
-        if (realTsMatch) { results[idx] = realTsMatch[1]; continue; }
-
-        // 4. Timestamp CSS class descendants (prefer absolute)
-        var tsEls = el.querySelectorAll('[class*="timestamp"], [class*="Timestamp"], [class*="timeAgo"], [class*="TimeAgo"], [class*="relativeTime"]');
-        var foundTsClass = false;
-        for (var tsi = 0; tsi < tsEls.length; tsi++) {
-          var tsText = (tsEls[tsi].textContent || '').trim();
-          if (tsText.length > 0 && tsText.length < 100 && !relativePattern.test(tsText)) {
-            results[idx] = tsText;
-            foundTsClass = true;
+          if (tmText.length > 0 && tmText.length < 100 && !relativePattern.test(tmText)) {
+            timestamp = tmText;
             break;
           }
         }
-        if (foundTsClass) continue;
-
-        // 5. ISO timestamp
-        var isoMatch = rawText.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/);
-        if (isoMatch) { results[idx] = isoMatch[1]; continue; }
-
-        // 6. Relative time as last resort
-        if (foundRelativeTs) { results[idx] = foundRelativeTs; continue; }
-        var relMatch = rawText.match(/(\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago)/i);
-        if (relMatch) { results[idx] = relMatch[1]; continue; }
-      }
-
-      // Backward walk: inherit from nearest previous element with a timestamp
-      var fbLastTs = null as any;
-      for (var fbw = 0; fbw < els.length; fbw++) {
-        if (results[fbw]) {
-          fbLastTs = results[fbw];
-        } else if (fbLastTs) {
-          results[fbw] = fbLastTs;
-        }
-      }
-
-      return results;
-    });
-
-    var combinedMaps = { ts: timestampMap, fb: fallbackTimestampMap };
-    var data = await page.evaluate(function(maps) {
-      var tsMap = maps.ts;
-      var fbTsMap = maps.fb;
-      var messages = [] as any[];
-      var checkpoints = [] as any[];
-      var workEntries = [] as any[];
-      var index = 0;
-      var seenKeys = {} as any;
-
-      var eventContainers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
-
-      for (var ei = 0; ei < eventContainers.length; ei++) {
-        var evEl = eventContainers[ei];
-        var rawText = (evEl.textContent || '').trim();
-        if (rawText.length < 5) continue;
-
-        // Use innerText to preserve line breaks from block elements (p, div, br, etc.)
-        var innerRaw = ((evEl as any).innerText || rawText).trim();
-
-        var cleanedText = rawText.replace(/\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*$/i, '').trim();
-        cleanedText = cleanedText.replace(/^\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*/i, '').trim();
-        if (cleanedText.length < 5) continue;
-
-        // Also clean innerText version for content output
-        var cleanedInner = innerRaw.replace(/\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*$/i, '').trim();
-        cleanedInner = cleanedInner.replace(/^\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*/i, '').trim();
-
-        var dedupKey = cleanedText.substring(0, 200);
-        if (seenKeys[dedupKey]) continue;
-        seenKeys[dedupKey] = true;
-
-        // Look up pre-computed timestamp
-        var timestamp = tsMap[ei] || null;
-
-        var evClass = (evEl.getAttribute('class') || '').toLowerCase();
-        var evEventType = (evEl.getAttribute('data-event-type') || '').toLowerCase();
-        var evCy = (evEl.getAttribute('data-cy') || '').toLowerCase();
-
-        var innerUserMarker = evEl.querySelector('[data-cy="user-message"], [data-event-type="user-message"], [class*="userMessage"], [class*="UserMessage"]');
-        var innerCheckpointMarker = evEl.querySelector('[class*="checkpoint"], [class*="Checkpoint"], [data-event-type*="checkpoint"]');
-
-        // ===== WORK ENTRY DETECTION: EndOfRunSummary "Worked for X" =====
-        var endOfRunRoot = evEl.querySelector('[class*="EndOfRunSummary"]');
-        if (!endOfRunRoot) {
-          var ownClass = evEl.getAttribute('class') || '';
-          if (ownClass.indexOf('EndOfRunSummary') >= 0) {
-            endOfRunRoot = evEl;
+        if (!timestamp) {
+          var timeEl = bEl.querySelector('time');
+          if (timeEl) {
+            var dt = timeEl.getAttribute('datetime');
+            if (dt) timestamp = dt;
+            else {
+              var tt = (timeEl.textContent || '').trim();
+              if (tt.length > 0 && tt.length < 100) timestamp = tt;
+            }
           }
         }
-
-        var workedMatch = rawText.match(/Worked\s+for\s+(\d+\s*(?:second|minute|hour|day|week|month|year)s?(?:\s*(?:and\s*)?\d+\s*(?:second|minute|hour|day|week|month|year)s?)*)/i);
-
-        if (endOfRunRoot || workedMatch) {
-          var wDuration = workedMatch ? workedMatch[1] : '';
-          var wDurationSecs = 0 as any;
-
-          if (wDuration) {
-            var durParts = wDuration.match(/(\d+)\s*(second|minute|hour|day|week|month|year)s?/gi);
-            if (durParts) {
-              for (var dp = 0; dp < durParts.length; dp++) {
-                var durMatch = durParts[dp].match(/(\d+)\s*(second|minute|hour|day|week|month|year)/i);
-                if (durMatch) {
-                  var durVal = parseInt(durMatch[1], 10);
-                  var durUnit = durMatch[2].toLowerCase();
-                  if (durUnit === 'second') wDurationSecs += durVal;
-                  else if (durUnit === 'minute') wDurationSecs += durVal * 60;
-                  else if (durUnit === 'hour') wDurationSecs += durVal * 3600;
-                  else if (durUnit === 'day') wDurationSecs += durVal * 86400;
-                }
-              }
-            }
-          }
-
-          var actionsMatch = rawText.match(/(\d+)\s*actions?/i);
-          var workDoneActions = actionsMatch ? parseInt(actionsMatch[1], 10) : null;
-
-          var itemsMatch = rawText.match(/(\d+)\s*lines/i);
-          var itemsReadLines = itemsMatch ? parseInt(itemsMatch[1], 10) : null;
-
-          var codePlusMatch = rawText.match(/\+(\d+)/);
-          var codeMinusMatch = rawText.match(/-(\d+)/);
-          var codeChangedPlus = codePlusMatch ? parseInt(codePlusMatch[1], 10) : null;
-          var codeChangedMinus = codeMinusMatch ? parseInt(codeMinusMatch[1], 10) : null;
-
-          var totalCharge = null as any;
-          var costMatches = rawText.match(/\$[\d.]+/g);
-          if (costMatches && costMatches.length > 0) {
-            totalCharge = parseFloat(costMatches[0].substring(1));
-            if (isNaN(totalCharge)) totalCharge = null;
-          }
-
-          // Extract individual charge line items from expanded Agent Usage section
-          // KEY: Only capture items BELOW the "Agent Usage" heading, not above it
-          var chargeDetails = [] as any[];
-          var searchRoot = endOfRunRoot || evEl;
-
-          // Step 1: Find the "Agent Usage" heading element in the DOM
-          var agentUsageHeading = null as any;
-          var allChildEls = searchRoot.querySelectorAll('*');
-          for (var hi = 0; hi < allChildEls.length; hi++) {
-            var hEl = allChildEls[hi];
-            var hText = (hEl.textContent || '').trim();
-            // Match "Agent Usage" with optional dollar amount like "Agent Usage" or just the heading
-            // The heading element is typically short and contains "Agent Usage"
-            if (hText.indexOf('Agent Usage') >= 0 && hText.length < 50) {
-              // Prefer the most specific (deepest) element that matches
-              agentUsageHeading = hEl;
-            }
-          }
-
-          if (agentUsageHeading) {
-            // Step 2: Only scan elements that come AFTER the Agent Usage heading
-            var labelCandidates = [] as any[];
-            var amountCandidates = [] as any[];
-
-            for (var ci = 0; ci < allChildEls.length; ci++) {
-              var childEl = allChildEls[ci];
-              // Check if this element comes AFTER the Agent Usage heading in DOM order
-              var headingPos = agentUsageHeading.compareDocumentPosition(childEl);
-              // headingPos & 4 means childEl follows agentUsageHeading
-              if (!(headingPos & 4)) continue;
-
-              // Only consider leaf-ish elements
-              if (childEl.children.length > 3) continue;
-              var childText = (childEl.textContent || '').trim();
-              if (childText.length === 0) continue;
-
-              // Check if this is a dollar amount
-              var amtMatch = childText.match(/^\$([\d.]+)$/);
-              if (amtMatch) {
-                amountCandidates.push({
-                  el: childEl,
-                  amount: parseFloat(amtMatch[1]),
-                  text: childText,
-                  rect: childEl.getBoundingClientRect()
-                });
-                continue;
-              }
-
-              // Check if this could be a label (short text, no dollar sign)
-              if (childText.length > 2 && childText.length < 150 && childText.indexOf('$') < 0) {
-                var lowerText = childText.toLowerCase();
-                // Skip the heading text itself or noise
-                if (lowerText === 'agent usage') continue;
-
-                labelCandidates.push({
-                  el: childEl,
-                  text: childText,
-                  rect: childEl.getBoundingClientRect()
-                });
-              }
-            }
-
-            // Step 3: Match labels to amounts by DOM proximity
-            var usedLabels = {} as any;
-            for (var ami = 0; ami < amountCandidates.length; ami++) {
-              var amt = amountCandidates[ami];
-
-              var bestLabel = null as any;
-              var bestDistance = 999999;
-
-              for (var li = 0; li < labelCandidates.length; li++) {
-                var lbl = labelCandidates[li];
-                if (usedLabels[li]) continue;
-
-                // Check if this label appears before this amount in DOM order
-                var pos = lbl.el.compareDocumentPosition(amt.el);
-                if (pos & 4) {
-                  var vDist = Math.abs(amt.rect.top - lbl.rect.top);
-                  if (vDist < bestDistance && vDist < 100) {
-                    bestDistance = vDist;
-                    bestLabel = { index: li, text: lbl.text };
-                  }
-                }
-              }
-
-              if (bestLabel) {
-                usedLabels[bestLabel.index] = true;
-                var cleanLabel = bestLabel.text.replace(/\s+/g, ' ').trim();
-                if (!isNaN(amt.amount) && amt.amount > 0) {
-                  chargeDetails.push({
-                    label: cleanLabel,
-                    amount: amt.amount
-                  });
-                }
-              }
-            }
-
-            // Remove the total if it got captured (matches totalCharge)
-            if (chargeDetails.length > 1 && totalCharge !== null) {
-              var filtered = [] as any[];
-              var removedTotal = false;
-              for (var fi = 0; fi < chargeDetails.length; fi++) {
-                if (!removedTotal && Math.abs(chargeDetails[fi].amount - totalCharge) < 0.005) {
-                  removedTotal = true;
-                  continue;
-                }
-                filtered.push(chargeDetails[fi]);
-              }
-              if (filtered.length > 0) {
-                chargeDetails = filtered;
-              }
-            }
-          }
-
-          workEntries.push({
-            timestamp: timestamp,
-            timeWorked: wDuration || '',
-            durationSeconds: wDurationSecs > 0 ? wDurationSecs : null,
-            workDoneActions: workDoneActions,
-            itemsReadLines: itemsReadLines,
-            codeChangedPlus: codeChangedPlus,
-            codeChangedMinus: codeChangedMinus,
-            agentUsage: totalCharge,
-            chargeDetails: chargeDetails,
-            index: index++
-          });
-
-          continue;
+        if (!timestamp) {
+          var realTsMatch = bRaw.match(/(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})/i);
+          if (realTsMatch) timestamp = realTsMatch[1];
         }
 
-        // ===== CHECKPOINT DETECTION =====
-        var isCheckpoint = evClass.indexOf('checkpoint') >= 0 ||
-          evEventType.indexOf('checkpoint') >= 0 ||
-          innerCheckpointMarker !== null ||
-          (cleanedText.indexOf('Checkpoint') >= 0 && cleanedText.length < 500);
+        var bClass = (bEl.getAttribute('class') || '').toLowerCase();
+        var bCy = (bEl.getAttribute('data-cy') || '').toLowerCase();
+        var bEvType = (bEl.getAttribute('data-event-type') || '').toLowerCase();
+        var bUserMarker = bEl.querySelector('[data-cy="user-message"], [data-event-type="user-message"], [class*="userMessage"], [class*="UserMessage"]');
 
-        if (isCheckpoint) {
-          // Priority 1: Real absolute timestamp from expanded checkpoint content
-          // e.g. "5:46 pm, Feb 07, 2026" shown after description text
-          var cpTimestamp = null as any;
-          var realTimestampMatch = rawText.match(/(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})/i);
-          if (realTimestampMatch) {
-            cpTimestamp = realTimestampMatch[1];
-          }
-          // Priority 2: Fall back to pre-computed timestamp map only if no absolute timestamp found
-          if (!cpTimestamp) {
-            cpTimestamp = timestamp;
-          }
-
-          var cpDescription = '';
-          // Try matching with absolute timestamp format first (after toggle):
-          // "Checkpoint made  Saved progress...  5:46 pm, Feb 07, 2026  Rollback here..."
-          var cpDescMatchAbs = rawText.match(/Checkpoint\s+made\s*([\s\S]*?)(?:\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4}|\s*Rollback|\s*Preview|\s*Changes|$)/i);
-          if (cpDescMatchAbs && cpDescMatchAbs[1]) {
-            var descCandidate = cpDescMatchAbs[1].trim();
-            // Filter out if it only captured relative time like "4 days ago"
-            if (descCandidate && !descCandidate.match(/^\d+\s+(?:second|minute|hour|day|week|month|year)s?\s*ago\s*$/i)) {
-              cpDescription = descCandidate;
-            }
-          }
-          // Fallback: try with relative timestamp "...ago" separator
-          if (!cpDescription) {
-            var cpDescMatchRel = rawText.match(/Checkpoint\s+made[\s\S]*?ago\s*([\s\S]*?)(?:\d{1,2}:\d{2}\s*(?:am|pm)|\s*Rollback|\s*Preview|\s*Changes|$)/i);
-            if (cpDescMatchRel && cpDescMatchRel[1]) {
-              cpDescription = cpDescMatchRel[1].trim();
-            }
-          }
-          // Last resort: strip known noise from the text
-          if (!cpDescription) {
-            cpDescription = cleanedText
-              .replace(/Checkpoint\s+made\s*/i, '')
-              .replace(/\d+\s+(?:second|minute|hour|day|week|month|year)s?\s*ago\s*/i, '')
-              .replace(/\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4}/gi, '')
-              .replace(/Rollback\s+here/gi, '')
-              .replace(/Preview/gi, '')
-              .replace(/Changes/gi, '')
-              .trim();
-          }
-
-          var costMatch = rawText.match(/\$[\d.]+/);
-          checkpoints.push({
-            timestamp: cpTimestamp,
-            description: cpDescription.substring(0, 1000),
-            cost: costMatch ? costMatch[0] : null,
-            durationSeconds: null,
-            index: index++
-          });
-          continue;
-        }
-
-        // ===== MESSAGE CLASSIFICATION =====
-        if (cleanedText.match(/^Worked\s+for\s+/i)) continue;
-        if (cleanedText.match(/^Decided\s+on\s+/i) && cleanedText.length < 100) continue;
-        if (cleanedText.match(/^\d+\s+actions?\s*$/i)) continue;
-        if (cleanedText.match(/^Created task list\s*$/i)) continue;
-        if (cleanedText.match(/^Ready to share\?\s*Publish/i)) continue;
-
-        var isUser = evClass.indexOf('usermessage') >= 0 ||
-          evClass.indexOf('user-message') >= 0 ||
-          evEventType === 'user-message' ||
-          evCy === 'user-message' ||
-          innerUserMarker !== null;
-
-        var msgType = isUser ? 'user' : 'agent';
+        var bIsUser = bClass.indexOf('usermessage') >= 0 ||
+          bClass.indexOf('user-message') >= 0 ||
+          bCy.indexOf('user') >= 0 ||
+          bEvType === 'user-message' ||
+          bUserMarker !== null;
 
         messages.push({
-          type: msgType,
-          content: cleanedInner.substring(0, 10000),
+          type: bIsUser ? 'user' : 'agent',
+          content: bCleanInner.substring(0, 10000),
           timestamp: timestamp,
           index: index++
         });
       }
+      return messages;
+    });
 
-      // ===== FALLBACK STRATEGY =====
-      if (messages.length < 3) {
-        var broadSelectors = [
-          '[data-cy*="message"]',
-          '[data-event-type*="message"]',
-          '[class*="Message"][class*="module"]',
-          '[data-testid*="message"]',
-          '[data-testid*="chat"]',
-          '[role="listitem"]',
-          '[role="article"]'
-        ];
-
-        var selectorStr = broadSelectors.join(', ');
-        var selectorEls = document.querySelectorAll(selectorStr);
-
-        for (var bi = 0; bi < selectorEls.length; bi++) {
-          var bEl = selectorEls[bi];
-          var bRaw = (bEl.textContent || '').trim();
-          var bInner = ((bEl as any).innerText || bRaw).trim();
-
-          var bClean = bRaw.replace(/\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*$/i, '').trim();
-          bClean = bClean.replace(/^\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*/i, '').trim();
-          if (bClean.length < 5) continue;
-
-          var bCleanInner = bInner.replace(/\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*$/i, '').trim();
-          bCleanInner = bCleanInner.replace(/^\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*/i, '').trim();
-
-          var bKey = bClean.substring(0, 200);
-          if (seenKeys[bKey]) continue;
-          seenKeys[bKey] = true;
-
-          var bTimestamp = fbTsMap[bi] || null;
-
-          var bClass = (bEl.getAttribute('class') || '').toLowerCase();
-          var bCy = (bEl.getAttribute('data-cy') || '').toLowerCase();
-          var bEvType = (bEl.getAttribute('data-event-type') || '').toLowerCase();
-
-          var bUserMarker = bEl.querySelector('[data-cy="user-message"], [data-event-type="user-message"], [class*="userMessage"], [class*="UserMessage"]');
-
-          var bIsUser = bClass.indexOf('usermessage') >= 0 ||
-            bClass.indexOf('user-message') >= 0 ||
-            bCy.indexOf('user') >= 0 ||
-            bEvType === 'user-message' ||
-            bUserMarker !== null;
-
-          var bType = bIsUser ? 'user' : 'agent';
-
-          messages.push({
-            type: bType,
-            content: bCleanInner.substring(0, 10000),
-            timestamp: bTimestamp,
-            index: index++
-          });
-        }
-      }
-
-      // ===== DEDUPLICATION PASS =====
-      var deduped = [] as any[];
-      for (var d1 = 0; d1 < messages.length; d1++) {
-        var isDuplicate = false;
-        var m1 = messages[d1].content;
-        for (var d2 = 0; d2 < messages.length; d2++) {
-          if (d1 === d2) continue;
-          var m2 = messages[d2].content;
-          if (m2.length > m1.length && m2.indexOf(m1) >= 0) {
-            isDuplicate = true;
-            break;
-          }
-          if (m1 === m2 && d1 > d2) {
-            isDuplicate = true;
-            break;
-          }
-        }
-        if (!isDuplicate) {
-          deduped.push(messages[d1]);
-        }
-      }
-
-      for (var ri = 0; ri < deduped.length; ri++) {
-        deduped[ri].index = ri;
-      }
-
-      return { messages: deduped, checkpoints: checkpoints, workEntries: workEntries };
-    }, combinedMaps);
-
-    return data as { messages: ChatMessage[]; checkpoints: Checkpoint[]; workEntries: WorkEntry[] };
+    return {
+      messages: data as ChatMessage[],
+      checkpoints: [],
+      workEntries: []
+    };
   }
 
   async close(): Promise<void> {

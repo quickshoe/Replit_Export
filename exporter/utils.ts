@@ -292,6 +292,82 @@ export function exportAgentUsageDetailsCsv(exports: ReplExport[], outputDir: str
   return filePath;
 }
 
+export function exportChatMarkdown(exports: ReplExport[], outputDir: string): string {
+  const lines: string[] = [];
+
+  for (const exp of exports) {
+    lines.push(`# ${exp.replName}`);
+    lines.push('');
+
+    const allEvents: { timestamp: string | null; type: string; content: string; sortIndex: number }[] = [];
+
+    for (const msg of exp.messages) {
+      const content = msg.content;
+      if (content.match(/^Worked\s+for\s+/i)) continue;
+      if (content.match(/^Checkpoint\s+made/i)) continue;
+      if (content.match(/^Decided\s+on\s+/i) && content.length < 100) continue;
+      if (content.match(/^\d+\s+actions?\s*$/i)) continue;
+      if (content.match(/^Created task list\s*$/i)) continue;
+      if (content.match(/^Ready to share\?\s*Publish/i)) continue;
+
+      allEvents.push({
+        timestamp: msg.timestamp,
+        type: msg.type === 'user' ? 'User' : 'Agent',
+        content: content,
+        sortIndex: msg.index
+      });
+    }
+
+    for (const cp of exp.checkpoints) {
+      allEvents.push({
+        timestamp: cp.timestamp,
+        type: 'Checkpoint',
+        content: cp.description || 'Checkpoint made',
+        sortIndex: cp.index
+      });
+    }
+
+    for (const we of exp.workEntries) {
+      const parts: string[] = [];
+      if (we.timeWorked) parts.push(`Worked for ${we.timeWorked}`);
+      if (we.workDoneActions != null) parts.push(`${we.workDoneActions} actions`);
+      if (we.itemsReadLines != null) parts.push(`${we.itemsReadLines} lines read`);
+      if (we.codeChangedPlus != null || we.codeChangedMinus != null) {
+        parts.push(`Code: +${we.codeChangedPlus || 0}/-${we.codeChangedMinus || 0}`);
+      }
+      if (we.agentUsage != null) parts.push(`Agent usage: $${we.agentUsage}`);
+      if (we.chargeDetails && we.chargeDetails.length > 0) {
+        for (const detail of we.chargeDetails) {
+          parts.push(`  - ${detail.label}: $${detail.amount}`);
+        }
+      }
+
+      allEvents.push({
+        timestamp: we.timestamp,
+        type: 'Work Summary',
+        content: parts.join('\n'),
+        sortIndex: we.index
+      });
+    }
+
+    allEvents.sort((a, b) => a.sortIndex - b.sortIndex);
+
+    for (const event of allEvents) {
+      const ts = event.timestamp ? ` — ${event.timestamp}` : '';
+      lines.push(`## ${event.type}${ts}`);
+      lines.push('');
+      lines.push(event.content);
+      lines.push('');
+      lines.push('---');
+      lines.push('');
+    }
+  }
+
+  const filePath = path.join(outputDir, 'chat.md');
+  fs.writeFileSync(filePath, lines.join('\n'), 'utf-8');
+  return filePath;
+}
+
 export function ensureDir(dir: string): void {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
