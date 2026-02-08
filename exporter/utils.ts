@@ -146,6 +146,7 @@ export function exportAllEventsCsv(exports: ReplExport[], outputDir: string): st
   for (const exp of exports) {
     for (const msg of exp.messages) {
       rows.push({
+        index: msg.index,
         replName: exp.replName,
         timestamp: msg.timestamp || '',
         eventType: msg.type,
@@ -155,6 +156,7 @@ export function exportAllEventsCsv(exports: ReplExport[], outputDir: string): st
 
     for (const cp of exp.checkpoints) {
       rows.push({
+        index: cp.index,
         replName: exp.replName,
         timestamp: cp.timestamp || '',
         eventType: 'checkpoint',
@@ -173,6 +175,7 @@ export function exportAllEventsCsv(exports: ReplExport[], outputDir: string): st
       if (we.agentUsage != null) parts.push('Agent usage: $' + we.agentUsage);
       
       rows.push({
+        index: we.index,
         replName: exp.replName,
         timestamp: we.timestamp || '',
         eventType: 'work-entry',
@@ -180,8 +183,16 @@ export function exportAllEventsCsv(exports: ReplExport[], outputDir: string): st
       });
     }
   }
+
+  rows.sort(function(a, b) {
+    if (a.index !== b.index) return a.index - b.index;
+    const tsA = a.timestamp || '';
+    const tsB = b.timestamp || '';
+    return tsA.localeCompare(tsB);
+  });
   
   const columns = [
+    { key: 'index', label: 'Index' },
     { key: 'replName', label: 'Repl name' },
     { key: 'timestamp', label: 'Timestamp' },
     { key: 'eventType', label: 'Event type' },

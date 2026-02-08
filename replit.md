@@ -25,23 +25,22 @@ The tool is implemented as a Node.js CLI application, leveraging Playwright for 
 
 **Core Functionality:**
 - **Browser Automation:** Playwright opens a Chromium browser for manual user login and saves session cookies for persistence.
-- **Data Scraping:** The scraper navigates to specified Replit URLs, auto-scrolls to load full chat history, and sequentially processes DOM elements.
-- **Sequential Top-Down Walk:** The scraping process involves a "sequential top-down walk" where each DOM element is processed one at a time. This includes toggling relative timestamps to absolute, expanding collapsed sections (work summaries, agent usage, checkpoints), and immediately extracting structured data from each element before proceeding to the next.
-- **Robust Extraction:** Fallback selectors run only when the primary walk yields zero results. Work entries are deduplicated using composite keys (timestamp + duration + fee + actions + lines).
+- **Data Scraping:** The scraper navigates to specified Replit URLs, auto-scrolls to load full chat history, then processes DOM elements in two phases.
+- **Two-Phase Processing:** Phase 1 performs a single-pass targeted expansion that only clicks buttons matching three patterns: "X messages & X actions" (reveals agent chat history), "Checkpoint made" (reveals timestamps), and "Worked for X" (reveals work metrics). Everything else is left untouched. Phase 2 performs a single extraction pass over all visible containers after expansions are complete.
+- **Robust Extraction:** Fallback selectors run only when the primary extraction yields zero results. Work entries are deduplicated using composite keys (timestamp + duration + fee + actions + lines).
 - **Precise Duration:** Extracts tooltip/title attributes on duration elements to capture precise times (e.g., "6 minutes 30 seconds") instead of truncated display text ("6 minutes").
-- **Agent Usage Expansion:** Agent Usage is no longer expanded separately. The `expandSingleElement` method now handles all expansions uniformly during the line-by-line walk, including Agent Usage. The `aria-expanded="true"` guard prevents accidentally collapsing already-expanded sections.
 - **Relative Timestamp Fallback:** After extraction, if a timestamp matches the "X days/hours ago" pattern, the scraper clicks the timestamp toggle element within that container, waits 300ms, and re-reads the timestamp to capture the absolute value.
 - **DOM Debug Output:** Saves `dom-debug.json` with container structure samples for debugging DOM changes.
 - **Output Generation:** Exports data into multiple formats:
     - **JSON:** Individual `.json` file per repl, containing structured work entries.
-    - **CSV:** `all-events.csv` (combined messages, checkpoints, work entries), `chat.csv` (clean chat messages only), `work-tracking.csv` (structured work data with index number, description from nearest checkpoint or preceding message, and dedup by index), `work-summary.csv` (daily aggregated totals with human-readable duration and numeric minutes column).
+    - **CSV:** `all-events.csv` (combined messages, checkpoints, work entries, sorted by index then timestamp, includes index column), `chat.csv` (clean chat messages only), `work-tracking.csv` (structured work data with index number, description from nearest checkpoint or preceding message, and dedup by index), `work-summary.csv` (daily aggregated totals with human-readable duration and numeric minutes column).
     - **Markdown:** `chat.md` provides a human-readable chat history with all events, speakers, and timestamps.
 
 **Technical Implementations:**
 - **Playwright `page.evaluate` Context:** Code executed within `page.evaluate` strictly adheres to pure ES5 JavaScript, avoiding modern JS features (`const`/`let`, arrow functions, `forEach`, `.includes()`, regex `s` flag) to ensure compatibility within the browser context. Special attention is paid to `el.getAttribute('class')` over `el.className` for SVG compatibility.
 - **Navigation Strategy:** Uses `waitUntil: 'domcontentloaded'` for navigation instead of `networkidle` due to Replit's constant WebSocket connections. Navigation directly to the repl URL automatically loads the agent chat panel.
 - **Timestamp Extraction:** Employs a prioritized strategy for finding timestamps, checking `<time>` elements, parent/sibling elements, CSS classes, real-time patterns, and relative time. It explicitly clicks timestamp toggle switches within the UI to reveal absolute timestamps before extraction.
-- **DOM Pattern Recognition:** Leverages specific Replit DOM patterns (e.g., `EndOfRunSummary-module__*__root`, `ExpandableFeedContent-module__*__expandableButton`, `aria-expanded` attributes) to identify and interact with expandable content sections like "Worked for X" summaries and "Agent Usage" details.
+- **DOM Pattern Recognition:** Leverages specific Replit DOM patterns (e.g., `EndOfRunSummary-module__*__root`, `ExpandableFeedContent-module__*__expandableButton`, `aria-expanded` attributes) to identify and interact with expandable content sections.
 
 ## External Dependencies
 

@@ -246,7 +246,7 @@ export class ReplitScraper {
     console.log('Scrolling to load full chat history...');
     await this.scrollToLoadAll(page, chatContainer);
 
-    console.log('Walking chat top-down: expanding and extracting line by line...');
+    console.log('Processing chat: expand targeted sections, then extract all...');
     const { messages, checkpoints, workEntries } = await this.walkAndExtract(page, outputDir);
 
     for (const cp of checkpoints) {
@@ -351,28 +351,33 @@ export class ReplitScraper {
     return total;
   }
 
-  private async expandSingleElement(page: Page, index: number): Promise<boolean> {
-    return await page.evaluate(function(idx) {
-      var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
-      if (idx >= containers.length) return false;
-      var el = containers[idx];
+  private async expandTargetedSections(page: Page): Promise<number> {
+    var totalClicked = await page.evaluate(function() {
+      var clicked = 0;
 
-      var expandables = el.querySelectorAll(
+      var expandables = document.querySelectorAll(
         '[class*="ExpandableFeedContent"], [class*="expandableButton"], ' +
         'button[class*="expandable"], button[class*="Expandable"], ' +
         '[class*="expandable"][role="button"], [class*="Expandable"][role="button"], ' +
         'button[aria-expanded="false"], [role="button"][aria-expanded="false"]'
       );
 
-      var clicked = 0;
       for (var i = 0; i < expandables.length; i++) {
         var btn = expandables[i];
         if (btn.getAttribute('data-exporter-clicked') === '1') continue;
         var ariaExp = btn.getAttribute('aria-expanded');
         if (ariaExp === 'true') continue;
-        var text = (btn.textContent || '').trim();
-        if (text.indexOf('Rollback') >= 0) continue;
-        if (text.indexOf('Preview') >= 0 && text.length < 30) continue;
+
+        var text = (btn.textContent || '').trim().toLowerCase();
+
+        var isMessageActions = /\d+\s*messages?\s*[&,]\s*\d+\s*actions?/i.test(text) ||
+          /\d+\s*actions?\s*[&,]\s*\d+\s*messages?/i.test(text) ||
+          /\d+\s*messages?$/i.test(text);
+        var isCheckpoint = text.indexOf('checkpoint') >= 0 && text.indexOf('made') >= 0;
+        var isWorkedFor = /worked\s+for\s+/i.test(text);
+
+        if (!isMessageActions && !isCheckpoint && !isWorkedFor) continue;
+
         var rect = btn.getBoundingClientRect();
         if (rect.width > 0 && rect.height > 0) {
           btn.setAttribute('data-exporter-clicked', '1');
@@ -381,8 +386,10 @@ export class ReplitScraper {
         }
       }
 
-      return clicked > 0;
-    }, index);
+      return clicked;
+    });
+
+    return totalClicked;
   }
 
   private async extractElementData(page: Page, index: number, lastTimestamp: string | null): Promise<any> {
@@ -774,18 +781,32 @@ export class ReplitScraper {
   }
 
   private async walkAndExtract(page: Page, _outputDir: string = './exports'): Promise<{ messages: ChatMessage[]; checkpoints: Checkpoint[]; workEntries: WorkEntry[] }> {
-    // Step 1: Toggle all timestamps to absolute format before processing
-    console.log('  Toggling timestamps to absolute format...');
+    // ===== PHASE 1: Toggle timestamps to absolute format =====
+    console.log('  Phase 1: Toggling timestamps to absolute format...');
     var tsToggled = await this.toggleTimestamps(page);
     if (tsToggled > 0) {
       console.log(`  Toggled ${tsToggled} timestamps to absolute format`);
     }
 
-    // Step 2: Count total event containers
+    // ===== PHASE 2: Targeted expansion =====
+    console.log('  Phase 2: Expanding targeted sections (messages & actions, checkpoints, worked for)...');
+    var expandedCount = await this.expandTargetedSections(page);
+    console.log(`  Expanded ${expandedCount} collapsed sections`);
+
+    if (expandedCount > 0) {
+      await page.waitForTimeout(1500);
+
+      var tsToggledAfter = await this.toggleTimestamps(page);
+      if (tsToggledAfter > 0) {
+        console.log(`  Toggled ${tsToggledAfter} newly revealed timestamps`);
+      }
+    }
+
+    // ===== PHASE 3: Extract all data =====
     var totalContainers = await page.evaluate(function() {
       return document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]').length;
     });
-    console.log(`  Found ${totalContainers} event containers to process`);
+    console.log(`  Phase 3: Extracting data from ${totalContainers} containers...`);
 
     if (totalContainers === 0) {
       console.log('  No event containers found. Trying fallback selectors...');
@@ -798,38 +819,15 @@ export class ReplitScraper {
     var seenKeys: Record<string, boolean> = {};
     var lastTimestamp: string | null = null;
     var index = 0;
-    var expandedCount = 0;
 
-    // Step 3: Walk each container top-to-bottom
     for (var i = 0; i < totalContainers; i++) {
-      if (i % 25 === 0 && i > 0) {
-        process.stdout.write(`\r  Processing element ${i}/${totalContainers}...`);
+      if (i % 50 === 0 && i > 0) {
+        process.stdout.write(`\r  Extracting element ${i}/${totalContainers}...`);
       }
 
-      // 3a: Expand this element's collapsed sections (if any)
-      var didExpand = await this.expandSingleElement(page, i);
-      if (didExpand) {
-        expandedCount++;
-        await page.waitForTimeout(800);
-
-        // After expanding, toggle any newly revealed timestamps
-        await this.toggleTimestamps(page);
-
-        // Re-count containers in case expansion changed the DOM
-        var newTotal = await page.evaluate(function() {
-          return document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]').length;
-        });
-        if (newTotal !== totalContainers) {
-          totalContainers = newTotal;
-        }
-      }
-
-      // 3b: Extract data from this element
       var data = await this.extractElementData(page, i, lastTimestamp);
       if (!data) continue;
 
-      // 3c: If timestamp is relative (e.g. "4 days ago"), try to click a timestamp
-      // toggle within this element and re-read the absolute timestamp
       if (data.timestamp && /^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i.test(data.timestamp)) {
         var didClickToggle = await page.evaluate(function(idx) {
           var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
@@ -852,42 +850,42 @@ export class ReplitScraper {
         }, i);
 
         if (didClickToggle) {
-        await page.waitForTimeout(300);
+          await page.waitForTimeout(300);
 
-        var rereadTs = await page.evaluate(function(idx) {
-          var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
-          if (idx >= containers.length) return null;
-          var el = containers[idx];
+          var rereadTs = await page.evaluate(function(idx) {
+            var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
+            if (idx >= containers.length) return null;
+            var el = containers[idx];
 
-          var relativePattern = /^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i;
+            var relativePattern = /^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i;
 
-          var tsModuleEls = el.querySelectorAll('[class*="Timestamp-module"], [class*="timestamp-module"]');
-          for (var tmi = 0; tmi < tsModuleEls.length; tmi++) {
-            var tmText = (tsModuleEls[tmi].textContent || '').trim();
-            if (tmText.length > 0 && tmText.length < 100 && !relativePattern.test(tmText)) {
-              return tmText;
+            var tsModuleEls = el.querySelectorAll('[class*="Timestamp-module"], [class*="timestamp-module"]');
+            for (var tmi = 0; tmi < tsModuleEls.length; tmi++) {
+              var tmText = (tsModuleEls[tmi].textContent || '').trim();
+              if (tmText.length > 0 && tmText.length < 100 && !relativePattern.test(tmText)) {
+                return tmText;
+              }
             }
+
+            var timeEl = el.querySelector('time');
+            if (timeEl) {
+              var dt = timeEl.getAttribute('datetime');
+              if (dt) return dt;
+              var tt = (timeEl.textContent || '').trim();
+              if (tt.length > 0 && tt.length < 100 && !relativePattern.test(tt)) return tt;
+            }
+
+            var rawText = (el.textContent || '').trim();
+            var realTsMatch = rawText.match(/(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})/i);
+            if (realTsMatch) return realTsMatch[1];
+
+            return null;
+          }, i);
+
+          if (rereadTs) {
+            data.timestamp = rereadTs;
+            console.log('  [Timestamp fix] Converted relative timestamp to: ' + rereadTs);
           }
-
-          var timeEl = el.querySelector('time');
-          if (timeEl) {
-            var dt = timeEl.getAttribute('datetime');
-            if (dt) return dt;
-            var tt = (timeEl.textContent || '').trim();
-            if (tt.length > 0 && tt.length < 100 && !relativePattern.test(tt)) return tt;
-          }
-
-          var rawText = (el.textContent || '').trim();
-          var realTsMatch = rawText.match(/(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})/i);
-          if (realTsMatch) return realTsMatch[1];
-
-          return null;
-        }, i);
-
-        if (rereadTs) {
-          data.timestamp = rereadTs;
-          console.log('  [Timestamp fix] Converted relative timestamp to: ' + rereadTs);
-        }
         }
       }
 
@@ -931,10 +929,8 @@ export class ReplitScraper {
       }
     }
 
-    console.log(`\r  Processed ${totalContainers} elements`);
-    if (expandedCount > 0) console.log(`  Expanded ${expandedCount} collapsed sections`);
+    console.log(`\r  Extracted from ${totalContainers} containers`);
 
-    // Deduplication pass for messages
     var deduped: ChatMessage[] = [];
     for (var d1 = 0; d1 < messages.length; d1++) {
       var isDuplicate = false;
@@ -957,9 +953,8 @@ export class ReplitScraper {
       deduped[ri].index = ri;
     }
 
-    // If primary walk found nothing at all, try fallback
     if (deduped.length === 0 && checkpoints.length === 0 && workEntries.length === 0) {
-      console.log('  Primary walk found no results, trying fallback extraction...');
+      console.log('  Primary extraction found no results, trying fallback...');
       return this.fallbackExtract(page);
     }
 
