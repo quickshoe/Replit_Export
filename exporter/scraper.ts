@@ -808,7 +808,7 @@ export class ReplitScraper {
     let sameCountIterations = 0;
     let loadMoreFailedClicks = 0;
     const maxIterations = 100;
-    const maxLoadMoreFailures = 3;
+    const maxLoadMoreFailures = 2;
     const startTime = Date.now();
     const maxTime = 60000;
     
@@ -854,7 +854,7 @@ export class ReplitScraper {
         process.stdout.write(`\rClicked load more button, waiting for new messages...`);
         
         let loadWaitAttempts = 0;
-        const maxLoadWaitAttempts = 10;
+        const maxLoadWaitAttempts = 3;
         let newCount = currentCount;
         
         while (loadWaitAttempts < maxLoadWaitAttempts) {
@@ -885,11 +885,44 @@ export class ReplitScraper {
         }
         
         if (newCount <= currentCount) {
-          loadMoreFailedClicks++;
-          process.stdout.write(`\rLoad more click ${loadMoreFailedClicks}/${maxLoadMoreFailures} didn't add messages...`);
-          if (loadMoreFailedClicks >= maxLoadMoreFailures) {
-            console.log(`\nReached beginning of chat (button visible but no new messages after ${maxLoadMoreFailures} attempts)`);
+          const buttonStillVisible = await this.isLoadMoreButtonVisible(page);
+          if (!buttonStillVisible) {
+            console.log(`\nReached beginning of chat (load more button disappeared)`);
             break;
+          }
+          const extendedWait = loadMoreFailedClicks === 0 ? 2000 : 4000;
+          await page.waitForTimeout(extendedWait);
+          newCount = await page.evaluate(function() {
+            var selectors = [
+              '[data-testid*="message"]',
+              '[data-cy*="message"]',
+              '[class*="ChatMessage"]',
+              '[class*="chat-message"]',
+              '[class*="UserMessage"]',
+              '[class*="AgentMessage"]',
+              '[class*="AssistantMessage"]'
+            ];
+            var count = 0;
+            for (var k = 0; k < selectors.length; k++) {
+              count += document.querySelectorAll(selectors[k]).length;
+            }
+            return count;
+          });
+          if (newCount > currentCount) {
+            process.stdout.write(`\rLoaded ${newCount - currentCount} new messages after extended wait...`);
+            loadMoreFailedClicks = 0;
+          } else {
+            const stillVisible = await this.isLoadMoreButtonVisible(page);
+            if (!stillVisible) {
+              console.log(`\nReached beginning of chat (load more button disappeared after wait)`);
+              break;
+            }
+            loadMoreFailedClicks++;
+            process.stdout.write(`\rLoad more click ${loadMoreFailedClicks}/${maxLoadMoreFailures} didn't add messages...`);
+            if (loadMoreFailedClicks >= maxLoadMoreFailures) {
+              console.log(`\nReached beginning of chat (no new messages after ${maxLoadMoreFailures} attempts)`);
+              break;
+            }
           }
         }
         
@@ -898,7 +931,7 @@ export class ReplitScraper {
         continue;
       }
 
-      await page.waitForTimeout(300);
+      await page.waitForTimeout(150);
 
       if (currentCount === previousCount) {
         sameCountIterations++;
@@ -981,6 +1014,49 @@ export class ReplitScraper {
     });
 
     return clicked;
+  }
+
+  private async isLoadMoreButtonVisible(page: Page): Promise<boolean> {
+    const playwrightSelectors = [
+      'button:has-text("Show previous")',
+      'button:has-text("Load more")',
+      'button:has-text("Show earlier")',
+      'button:has-text("Previous messages")',
+      '[data-testid*="load-more"]',
+      '[data-testid*="previous"]',
+      '[data-cy*="load-more"]',
+      '[class*="LoadMore"]',
+      '[class*="load-more"]',
+      '[class*="showPrevious"]',
+      '[class*="ShowPrevious"]',
+    ];
+
+    for (const selector of playwrightSelectors) {
+      try {
+        const button = await page.$(selector);
+        if (button) {
+          const isVisible = await button.isVisible();
+          if (isVisible) return true;
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    return page.evaluate(function() {
+      var buttons = document.querySelectorAll('button, [role="button"], a');
+      for (var i = 0; i < buttons.length; i++) {
+        var text = (buttons[i].textContent || '').toLowerCase();
+        if (text.indexOf('show previous') >= 0 ||
+            text.indexOf('load more') >= 0 ||
+            text.indexOf('earlier') >= 0 ||
+            text.indexOf('previous message') >= 0) {
+          var rect = buttons[i].getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) return true;
+        }
+      }
+      return false;
+    });
   }
 
   private async walkAndExtract(page: Page, _outputDir: string = './exports'): Promise<{ messages: ChatMessage[]; checkpoints: Checkpoint[]; workEntries: WorkEntry[] }> {
