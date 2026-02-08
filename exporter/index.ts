@@ -50,6 +50,7 @@ async function main() {
     .option('-d, --dry-run', 'Only export the first app (for testing)', false)
     .option('-u, --urls <urls...>', 'Replit URLs or IDs to export (space-separated)')
     .option('--clear-session', 'Delete saved session and exit', false)
+    .option('-v, --verbose', 'Show detailed per-item logs (hover, precision merge)', false)
     .option('-o, --output <dir>', 'Output directory', OUTPUT_DIR);
 
   program.parse();
@@ -86,6 +87,9 @@ async function main() {
   const runTimestamp = formatRunTimestamp(runStart);
 
   const scraper = new ReplitScraper();
+  if (options.verbose) {
+    scraper.setVerbose(true);
+  }
   
   try {
     await scraper.init();

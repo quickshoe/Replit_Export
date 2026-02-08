@@ -23,6 +23,9 @@ const LOAD_MORE_SELECTORS = [
 export class ReplitScraper {
   private browser: Browser | null = null;
   private context: BrowserContext | null = null;
+  private verbose: boolean = false;
+
+  setVerbose(v: boolean): void { this.verbose = v; }
 
   async init(): Promise<void> {
     console.log('Launching browser...');
@@ -223,9 +226,15 @@ export class ReplitScraper {
     const scrapeStartTime = Date.now();
     console.log(`\nScraping: ${replName}`);
 
-    const page = await this.context.newPage();
-    
     const fullUrl = replUrl.startsWith('http') ? replUrl : `https://replit.com/${replUrl}`;
+    let page: Page;
+    let messages: ChatMessage[] = [];
+    let checkpoints: Checkpoint[] = [];
+    let workEntries: WorkEntry[] = [];
+    let gitCommits: GitCommit[] = [];
+
+    try {
+    page = await this.context.newPage();
     console.log(`Navigating to: ${fullUrl}`);
     
     try {
@@ -275,7 +284,6 @@ export class ReplitScraper {
     // === STEP 2: Navigate to Git tab, click one relative timestamp, scrape commits ===
     // The one-click timestamp conversion in the Git tab converts ALL relative timestamps
     // across the entire UI to absolute. This is critical for accurate timestamp extraction.
-    let gitCommits: GitCommit[] = [];
     try {
       gitCommits = await this.scrapeGitCommits(page);
     } catch (err) {
@@ -290,14 +298,17 @@ export class ReplitScraper {
 
     // === STEP 4: Hover over duration elements for precise times ===
     console.log('Step 4: Hovering over duration elements to capture precise tooltips...');
-    var hoverCount = await this.hoverDurationElements(page);
+    var hoverCount = await this.hoverDurationElements(page, this.verbose);
     if (hoverCount > 0) {
       console.log(`  Captured ${hoverCount} precise duration tooltips via hover`);
     }
 
     // === STEP 5: Extract all chat data (timestamps should now be absolute) ===
     console.log('Step 5: Extracting all chat data...');
-    const { messages, checkpoints, workEntries } = await this.extractAllData(page, outputDir);
+    const extracted = await this.extractAllData(page, outputDir);
+    messages = extracted.messages;
+    checkpoints = extracted.checkpoints;
+    workEntries = extracted.workEntries;
 
     for (const cp of checkpoints) {
       cp.durationSeconds = calculateDuration(cp.timestamp, messages);
@@ -355,6 +366,20 @@ export class ReplitScraper {
 
     await page.close();
 
+    } catch (disconnectErr) {
+      const errMsg = (disconnectErr as Error).message || '';
+      if (errMsg.indexOf('Target closed') >= 0 ||
+          errMsg.indexOf('browser has been closed') >= 0 ||
+          errMsg.indexOf('Browser closed') >= 0 ||
+          errMsg.indexOf('Protocol error') >= 0) {
+        console.error('\n========================================');
+        console.error('Browser window was closed unexpectedly (perhaps by Cmd-W or another shortcut).');
+        console.error('The export for this URL was interrupted. Please re-run the tool.');
+        console.error('========================================\n');
+      }
+      throw disconnectErr;
+    }
+
     const result: ReplExport = {
       replName,
       replUrl: fullUrl,
@@ -377,7 +402,11 @@ export class ReplitScraper {
     console.log(`    Git commits: ${gitCommits.length}`);
     const withTimestamp = [...messages, ...workEntries, ...checkpoints].filter((e: any) => e.timestamp).length;
     const total = messages.length + workEntries.length + checkpoints.length;
-    console.log(`    Items with timestamps: ${withTimestamp}/${total}`);
+    if (withTimestamp < total) {
+      console.log(`    Items with timestamps: ${withTimestamp}/${total} (${total - withTimestamp} item(s) at start of conversation may lack timestamps)`);
+    } else {
+      console.log(`    Items with timestamps: ${withTimestamp}/${total} (all items have timestamps)`);
+    }
     console.log(`    Extraction time: ${elapsedStr}`);
 
     return result;
@@ -1269,7 +1298,7 @@ export class ReplitScraper {
     return totalClicked;
   }
 
-  private async hoverDurationElements(page: Page): Promise<number> {
+  private async hoverDurationElements(page: Page, verbose: boolean = false): Promise<number> {
     var durationIndices: number[] = await page.evaluate(function() {
       var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
       var indices = [] as number[];
@@ -1372,6 +1401,12 @@ export class ReplitScraper {
 
       if (!durationElInfo) continue;
 
+      // Skip hover if duration already shows only seconds (no more precision available)
+      var dText = durationElInfo.text.toLowerCase();
+      if (/\d+\s*seconds?/i.test(dText) && dText.indexOf('minute') < 0 && dText.indexOf('hour') < 0) {
+        continue;
+      }
+
       try {
         await page.evaluate(function(idx) {
           var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
@@ -1444,7 +1479,9 @@ export class ReplitScraper {
               containers[args.idx].setAttribute('data-precise-duration', args.duration);
             }
           }, { idx: containerIdx, duration: tooltipText });
-          console.log(`  [Hover] Container ${containerIdx}: "${durationElInfo.text}" -> "${tooltipText}"`);
+          if (verbose) {
+            console.log(`  [Hover] Container ${containerIdx}: "${durationElInfo.text}" -> "${tooltipText}"`);
+          }
           captured++;
         }
 
@@ -1474,39 +1511,7 @@ export class ReplitScraper {
       var evEventType = (el.getAttribute('data-event-type') || '').toLowerCase();
       var evCy = (el.getAttribute('data-cy') || '').toLowerCase();
 
-      var timestamp = null as any;
-
-      var realTsMatch = rawText.match(/(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})/i);
-      if (realTsMatch) timestamp = realTsMatch[1];
-
-      if (!timestamp) {
-        var tsModuleEls = el.querySelectorAll('[class*="Timestamp-module"], [class*="timestamp-module"]');
-        for (var tmi = 0; tmi < tsModuleEls.length; tmi++) {
-          var tmText = (tsModuleEls[tmi].textContent || '').trim();
-          if (tmText.length > 0 && tmText.length < 100) {
-            var isRelative = /^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i.test(tmText);
-            if (!isRelative) {
-              timestamp = tmText;
-              break;
-            }
-          }
-        }
-      }
-
-      if (!timestamp) {
-        var timeEl = el.querySelector('time');
-        if (timeEl) {
-          var dt = timeEl.getAttribute('datetime');
-          if (dt) timestamp = dt;
-          else {
-            var tt = (timeEl.textContent || '').trim();
-            if (tt.length > 0 && tt.length < 100) timestamp = tt;
-          }
-        }
-      }
-
-      if (!timestamp) timestamp = prevTimestamp;
-
+      // === STEP 1: Classify entry type BEFORE timestamp extraction ===
       var innerUserMarker = el.querySelector('[data-cy="user-message"], [data-event-type="user-message"], [class*="userMessage"], [class*="UserMessage"]');
       var innerCheckpointMarker = el.querySelector('[class*="checkpoint"], [class*="Checkpoint"], [data-event-type*="checkpoint"]');
 
@@ -1525,7 +1530,130 @@ export class ReplitScraper {
         isExpandableWork = hasExpanded || hasExpandable;
       }
 
-      if (endOfRunRoot || (workedMatch && isExpandableWork)) {
+      var isWorkEntry = !!(endOfRunRoot || (workedMatch && isExpandableWork));
+
+      var isCheckpoint = evClass.indexOf('checkpoint') >= 0 ||
+        evEventType.indexOf('checkpoint') >= 0 ||
+        innerCheckpointMarker !== null ||
+        (rawText.indexOf('Checkpoint') >= 0 && rawText.length < 500);
+
+      // TIMESTAMP RULES (explicit per entry type):
+      // - Work entries: always inherit from preceding checkpoint (prevTimestamp)
+      // - Checkpoints: timestamp is embedded in their own container text
+      // - Messages: timestamp is in a following sibling element outside the container;
+      //   fall back to prevTimestamp if not found
+
+      // === STEP 2: Entry-type-specific timestamp extraction ===
+      var timestamp = null as any;
+
+      if (isWorkEntry) {
+        // Work entries never have their own timestamp; inherit from preceding checkpoint
+        timestamp = prevTimestamp;
+
+      } else if (isCheckpoint) {
+        // Checkpoints: search inside the container only (timestamp embedded in text)
+        var cpRealTsMatch = rawText.match(/(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})/i);
+        if (cpRealTsMatch) {
+          timestamp = cpRealTsMatch[1];
+        }
+        if (!timestamp) {
+          var cpTsModuleEls = el.querySelectorAll('[class*="Timestamp-module"], [class*="timestamp-module"]');
+          for (var cpTmi = 0; cpTmi < cpTsModuleEls.length; cpTmi++) {
+            var cpTmText = (cpTsModuleEls[cpTmi].textContent || '').trim();
+            if (cpTmText.length > 0 && cpTmText.length < 100) {
+              var cpIsRelative = /^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i.test(cpTmText);
+              if (!cpIsRelative) {
+                timestamp = cpTmText;
+                break;
+              }
+            }
+          }
+        }
+        if (!timestamp) {
+          var cpTimeEl = el.querySelector('time');
+          if (cpTimeEl) {
+            var cpDt = cpTimeEl.getAttribute('datetime');
+            if (cpDt) timestamp = cpDt;
+            else {
+              var cpTt = (cpTimeEl.textContent || '').trim();
+              if (cpTt.length > 0 && cpTt.length < 100) timestamp = cpTt;
+            }
+          }
+        }
+        if (!timestamp) timestamp = prevTimestamp;
+
+      } else {
+        // Messages: search inside container first
+        var realTsMatch = rawText.match(/(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})/i);
+        if (realTsMatch) timestamp = realTsMatch[1];
+
+        if (!timestamp) {
+          var tsModuleEls = el.querySelectorAll('[class*="Timestamp-module"], [class*="timestamp-module"]');
+          for (var tmi = 0; tmi < tsModuleEls.length; tmi++) {
+            var tmText = (tsModuleEls[tmi].textContent || '').trim();
+            if (tmText.length > 0 && tmText.length < 100) {
+              var isRelative = /^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i.test(tmText);
+              if (!isRelative) {
+                timestamp = tmText;
+                break;
+              }
+            }
+          }
+        }
+
+        if (!timestamp) {
+          var timeEl = el.querySelector('time');
+          if (timeEl) {
+            var dt = timeEl.getAttribute('datetime');
+            if (dt) timestamp = dt;
+            else {
+              var tt = (timeEl.textContent || '').trim();
+              if (tt.length > 0 && tt.length < 100) timestamp = tt;
+            }
+          }
+        }
+
+        // For messages: check next sibling element(s) for timestamp
+        if (!timestamp) {
+          var nextSib = el.nextElementSibling;
+          var sibChecked = 0;
+          while (nextSib && sibChecked < 3 && !timestamp) {
+            var sibText = (nextSib.textContent || '').trim();
+            var sibTsMatch = sibText.match(/(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})/i);
+            if (sibTsMatch) {
+              timestamp = sibTsMatch[1];
+              break;
+            }
+            var sibTsModules = nextSib.querySelectorAll ? nextSib.querySelectorAll('[class*="Timestamp-module"], [class*="timestamp-module"]') : [];
+            for (var stm = 0; stm < sibTsModules.length; stm++) {
+              var stmText = (sibTsModules[stm].textContent || '').trim();
+              if (stmText.length > 0 && stmText.length < 100) {
+                var stmRelative = /^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i.test(stmText);
+                if (!stmRelative) {
+                  timestamp = stmText;
+                  break;
+                }
+              }
+            }
+            if (timestamp) break;
+            var sibTimeEl = nextSib.querySelector ? nextSib.querySelector('time') : null;
+            if (sibTimeEl) {
+              var sibDt = sibTimeEl.getAttribute('datetime');
+              if (sibDt) { timestamp = sibDt; break; }
+              var sibTt = (sibTimeEl.textContent || '').trim();
+              if (sibTt.length > 0 && sibTt.length < 100) { timestamp = sibTt; break; }
+            }
+            nextSib = nextSib.nextElementSibling;
+            sibChecked++;
+          }
+        }
+
+        if (!timestamp) timestamp = prevTimestamp;
+      }
+
+      // === STEP 3: Build and return entry based on type ===
+
+      if (isWorkEntry) {
         var wDuration = workedMatch ? workedMatch[1] : '';
 
         var hoverPrecise = el.getAttribute('data-precise-duration');
@@ -1604,17 +1732,7 @@ export class ReplitScraper {
         };
       }
 
-      var isCheckpoint = evClass.indexOf('checkpoint') >= 0 ||
-        evEventType.indexOf('checkpoint') >= 0 ||
-        innerCheckpointMarker !== null ||
-        (rawText.indexOf('Checkpoint') >= 0 && rawText.length < 500);
-
       if (isCheckpoint) {
-        var cpTimestamp = null as any;
-        var cpRealTsMatch = rawText.match(/(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})/i);
-        if (cpRealTsMatch) cpTimestamp = cpRealTsMatch[1];
-        if (!cpTimestamp) cpTimestamp = timestamp;
-
         var cpDescription = rawText
           .replace(/Checkpoint\s+made\s*/i, '')
           .replace(/\d+\s+(?:second|minute|hour|day|week|month|year)s?\s*ago\s*/gi, '')
@@ -1625,7 +1743,7 @@ export class ReplitScraper {
         return {
           entryType: 'checkpoint',
           containerIdx: idx,
-          timestamp: cpTimestamp,
+          timestamp: timestamp,
           description: cpDescription.substring(0, 1000),
           cost: costMatch ? costMatch[0] : null
         };
@@ -2003,7 +2121,9 @@ export class ReplitScraper {
             }
           }
           if (newSecs > 0 && (newSecs !== we.durationSeconds || cleanPrecise !== we.timeWorked)) {
-            console.log(`  [Precision merge] Container ${we._containerIdx}: "${we.timeWorked}" -> "${cleanPrecise}" (${newSecs}s)`);
+            if (this.verbose) {
+              console.log(`  [Precision merge] Container ${we._containerIdx}: "${we.timeWorked}" -> "${cleanPrecise}" (${newSecs}s)`);
+            }
             workEntries[wi] = { ...we, timeWorked: cleanPrecise, durationSeconds: newSecs };
             mergeCount++;
           }
