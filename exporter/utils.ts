@@ -674,8 +674,171 @@ export function exportChatMarkdown(exports: ReplExport[], outputDir: string): st
   return filePath;
 }
 
+export function exportCombinedWorkSummaryCsv(exports: ReplExport[], outputDir: string, runTimestamp: string): string {
+  const dailyMap: Record<string, {
+    replName: string;
+    date: string;
+    totalSeconds: number;
+    workDoneActions: number;
+    itemsReadLines: number;
+    codeChangedPlus: number;
+    codeChangedMinus: number;
+    agentUsage: number;
+  }> = {};
+
+  for (const exp of exports) {
+    if (!exp.workEntries) continue;
+    for (const we of exp.workEntries) {
+      let dateKey = 'Unknown';
+      if (we.timestamp) {
+        let parsed = parseTimestamp(we.timestamp);
+        if (!parsed) {
+          const rawDateMatch = we.timestamp.match(/(\w+\s+\d{1,2},\s*\d{4})/);
+          if (rawDateMatch) {
+            const tryParse = new Date(rawDateMatch[1]);
+            if (!isNaN(tryParse.getTime())) parsed = tryParse;
+          }
+        }
+        if (parsed) {
+          const y = parsed.getFullYear();
+          const m = String(parsed.getMonth() + 1).padStart(2, '0');
+          const d = String(parsed.getDate()).padStart(2, '0');
+          dateKey = `${y}-${m}-${d}`;
+        }
+      }
+
+      const compositeKey = `${exp.replName}|${dateKey}`;
+      if (!dailyMap[compositeKey]) {
+        dailyMap[compositeKey] = {
+          replName: exp.replName,
+          date: dateKey,
+          totalSeconds: 0,
+          workDoneActions: 0,
+          itemsReadLines: 0,
+          codeChangedPlus: 0,
+          codeChangedMinus: 0,
+          agentUsage: 0,
+        };
+      }
+
+      const entry = dailyMap[compositeKey];
+      if (we.durationSeconds != null) entry.totalSeconds += we.durationSeconds;
+      if (we.workDoneActions != null) entry.workDoneActions += we.workDoneActions;
+      if (we.itemsReadLines != null) entry.itemsReadLines += we.itemsReadLines;
+      if (we.codeChangedPlus != null) entry.codeChangedPlus += we.codeChangedPlus;
+      if (we.codeChangedMinus != null) entry.codeChangedMinus += we.codeChangedMinus;
+      if (we.agentUsage != null) entry.agentUsage += we.agentUsage;
+    }
+  }
+
+  const sortedKeys = Object.keys(dailyMap).sort(function(a, b) {
+    const entryA = dailyMap[a];
+    const entryB = dailyMap[b];
+    const nameCompare = entryA.replName.localeCompare(entryB.replName);
+    if (nameCompare !== 0) return nameCompare;
+    if (entryA.date === 'Unknown') return 1;
+    if (entryB.date === 'Unknown') return -1;
+    return entryA.date.localeCompare(entryB.date);
+  });
+
+  const rows: Record<string, any>[] = [];
+  let currentRepl = '';
+  let replTotals = {
+    totalSeconds: 0, workDoneActions: 0, itemsReadLines: 0,
+    codeChangedPlus: 0, codeChangedMinus: 0, agentUsage: 0,
+  };
+
+  function formatDuration(totalSeconds: number): string {
+    const hours = Math.floor(totalSeconds / 3600);
+    const mins = Math.floor((totalSeconds % 3600) / 60);
+    const secs = totalSeconds % 60;
+    const parts: string[] = [];
+    if (hours > 0) parts.push(`${hours} hour${hours !== 1 ? 's' : ''}`);
+    if (mins > 0) parts.push(`${mins} minute${mins !== 1 ? 's' : ''}`);
+    if (secs > 0 || parts.length === 0) parts.push(`${secs} second${secs !== 1 ? 's' : ''}`);
+    return parts.join(' ');
+  }
+
+  function pushDaySubtotal(replName: string, totals: typeof replTotals) {
+    if (totals.totalSeconds === 0 && totals.agentUsage === 0) return;
+    rows.push({
+      replName: `SUBTOTAL: ${replName}`,
+      date: '',
+      timeWorked: formatDuration(totals.totalSeconds),
+      durationMinutes: Math.round((totals.totalSeconds / 60) * 100) / 100,
+      workDoneActions: totals.workDoneActions,
+      itemsReadLines: totals.itemsReadLines,
+      codeChangedPlus: totals.codeChangedPlus,
+      codeChangedMinus: totals.codeChangedMinus,
+      agentUsage: Math.round(totals.agentUsage * 100) / 100,
+    });
+  }
+
+  for (const key of sortedKeys) {
+    const entry = dailyMap[key];
+
+    if (entry.replName !== currentRepl) {
+      if (currentRepl) {
+        pushDaySubtotal(currentRepl, replTotals);
+      }
+      currentRepl = entry.replName;
+      replTotals = {
+        totalSeconds: 0, workDoneActions: 0, itemsReadLines: 0,
+        codeChangedPlus: 0, codeChangedMinus: 0, agentUsage: 0,
+      };
+    }
+
+    replTotals.totalSeconds += entry.totalSeconds;
+    replTotals.workDoneActions += entry.workDoneActions;
+    replTotals.itemsReadLines += entry.itemsReadLines;
+    replTotals.codeChangedPlus += entry.codeChangedPlus;
+    replTotals.codeChangedMinus += entry.codeChangedMinus;
+    replTotals.agentUsage += entry.agentUsage;
+
+    rows.push({
+      replName: entry.replName,
+      date: entry.date,
+      timeWorked: formatDuration(entry.totalSeconds),
+      durationMinutes: Math.round((entry.totalSeconds / 60) * 100) / 100,
+      workDoneActions: entry.workDoneActions,
+      itemsReadLines: entry.itemsReadLines,
+      codeChangedPlus: entry.codeChangedPlus,
+      codeChangedMinus: entry.codeChangedMinus,
+      agentUsage: Math.round(entry.agentUsage * 100) / 100,
+    });
+  }
+
+  if (currentRepl) {
+    pushDaySubtotal(currentRepl, replTotals);
+  }
+
+  const columns = [
+    { key: 'replName', label: 'Repl name' },
+    { key: 'date', label: 'Date' },
+    { key: 'timeWorked', label: 'Time worked' },
+    { key: 'durationMinutes', label: 'Duration (minutes)' },
+    { key: 'workDoneActions', label: 'Work done (actions)' },
+    { key: 'itemsReadLines', label: 'Items read (lines)' },
+    { key: 'codeChangedPlus', label: 'Code added' },
+    { key: 'codeChangedMinus', label: 'Code removed' },
+    { key: 'agentUsage', label: 'Agent usage fee' },
+  ];
+  const filePath = path.join(outputDir, `${runTimestamp}_work-summary.csv`);
+  writeCsv(columns, rows, filePath);
+  return filePath;
+}
+
 export function ensureDir(dir: string): void {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
+}
+
+export function formatRunTimestamp(date: Date): string {
+  const y = date.getFullYear();
+  const mo = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  const h = String(date.getHours()).padStart(2, '0');
+  const mi = String(date.getMinutes()).padStart(2, '0');
+  return `${y}${mo}${d}_${h}-${mi}`;
 }

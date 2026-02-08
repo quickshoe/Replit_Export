@@ -3,6 +3,7 @@ export interface ChatMessage {
   content: string;
   timestamp: string | null;
   index: number;
+  _containerIdx?: number;
 }
 
 export interface Checkpoint {
@@ -11,6 +12,7 @@ export interface Checkpoint {
   cost: string | null;
   durationSeconds: number | null;
   index: number;
+  _containerIdx?: number;
 }
 
 export interface WorkEntry {

@@ -51,10 +51,13 @@ The tool is implemented as a Node.js CLI application, leveraging Playwright for 
 - **Boilerplate Detection:** Uses startsWith patterns (`/^saved progress/i`, `/^transitioned from \w+ to \w+ mode/i`) for broader matching of boilerplate descriptions.
 - **DOM Debug Output:** Saves `dom-debug.json` with chat container structure samples and `git-tab-debug.json` with Git tab structure for debugging DOM changes.
 - **Extraction Timing:** The results summary includes elapsed extraction time (from start to finish) so users can monitor tool performance.
-- **Output Generation:** Exports data into multiple formats:
+- **Output Generation:** Exports are organized in per-URL directories with run timestamps:
+    - **Directory Structure:** Each URL gets a subdirectory named `{ReplName} - YYYYMMDD_HH-MM` inside the main exports directory. All per-URL files go there.
     - **JSON:** Individual `.json` file per repl, containing structured work entries and git commits.
     - **CSV:** `all-events.csv` (combined messages, checkpoints, work entries, sorted by index then timestamp, includes index column), `chat.csv` (clean chat messages only), `work-tracking.csv` (structured work data with index number, description from git commit matching or nearest checkpoint or preceding message, dedup by index, no duplicate descriptions), `work-summary.csv` (daily aggregated totals with human-readable duration and numeric minutes column).
     - **Markdown:** `chat.md` provides a human-readable chat history with all events, speakers, and timestamps.
+    - **Combined Work Summary:** `{YYYYMMDD_HH-MM}_work-summary.csv` in the main exports directory aggregates all URLs with per-URL daily subtotals, sorted by repl name then date.
+- **Unified Re-Indexing:** After extraction and deduplication, ALL entry types (messages, checkpoints, work entries) are combined, sorted by their original DOM container index (`_containerIdx`), and assigned sequential indices (0, 1, 2, ...). This ensures unique indices across all entry types and preserves DOM/chronological order.
 
 **Technical Implementations:**
 - **Playwright `page.evaluate` Context:** Code executed within `page.evaluate` strictly adheres to pure ES5 JavaScript, avoiding modern JS features (`const`/`let`, arrow functions, `forEach`, `.includes()`, regex `s` flag) to ensure compatibility within the browser context. Special attention is paid to `el.getAttribute('class')` over `el.className` for SVG compatibility.

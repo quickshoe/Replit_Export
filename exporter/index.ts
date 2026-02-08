@@ -4,7 +4,7 @@ import { Command } from 'commander';
 import * as readline from 'readline';
 import * as fs from 'fs';
 import { ReplitScraper } from './scraper';
-import { saveJsonExport, exportAllEventsCsv, exportChatCsv, exportChatMarkdown, exportWorkTrackingCsv, exportWorkSummaryCsv, ensureDir } from './utils';
+import { saveJsonExport, exportAllEventsCsv, exportChatCsv, exportChatMarkdown, exportWorkTrackingCsv, exportWorkSummaryCsv, exportCombinedWorkSummaryCsv, ensureDir, formatRunTimestamp, extractReplName } from './utils';
 import type { ReplExport } from './types';
 
 const OUTPUT_DIR = './exports';
@@ -82,6 +82,9 @@ async function main() {
   const outputDir = options.output;
   ensureDir(outputDir);
 
+  const runStart = new Date();
+  const runTimestamp = formatRunTimestamp(runStart);
+
   const scraper = new ReplitScraper();
   
   try {
@@ -123,29 +126,39 @@ async function main() {
         const data = await scraper.scrapeRepl(url, outputDir);
         exports.push(data);
 
-        const jsonPath = saveJsonExport(data, outputDir);
+        const replName = extractReplName(url);
+        const replDir = `${replName} - ${runTimestamp}`;
+        const replOutputDir = `${outputDir}/${replDir}`;
+        ensureDir(replOutputDir);
+
+        const jsonPath = saveJsonExport(data, replOutputDir);
         console.log(`  Saved: ${jsonPath}`);
+
+        const singleExport = [data];
+
+        const allEventsPath = exportAllEventsCsv(singleExport, replOutputDir);
+        console.log(`  All events CSV: ${allEventsPath}`);
+
+        const chatPath = exportChatCsv(singleExport, replOutputDir);
+        console.log(`  Chat CSV: ${chatPath}`);
+
+        const chatMdPath = exportChatMarkdown(singleExport, replOutputDir);
+        console.log(`  Chat Markdown: ${chatMdPath}`);
+
+        const workTrackingPath = exportWorkTrackingCsv(singleExport, replOutputDir);
+        console.log(`  Work tracking CSV: ${workTrackingPath}`);
+
+        const workSummaryPath = exportWorkSummaryCsv(singleExport, replOutputDir);
+        console.log(`  Work summary CSV: ${workSummaryPath}`);
+
       } catch (err) {
         console.error(`  Error processing ${url}:`, err);
       }
     }
 
     if (exports.length > 0) {
-      const allEventsPath = exportAllEventsCsv(exports, outputDir);
-      console.log(`\nAll events CSV saved: ${allEventsPath}`);
-
-      const chatPath = exportChatCsv(exports, outputDir);
-      console.log(`Chat CSV saved: ${chatPath}`);
-
-      const chatMdPath = exportChatMarkdown(exports, outputDir);
-      console.log(`Chat Markdown saved: ${chatMdPath}`);
-      
-      const workTrackingPath = exportWorkTrackingCsv(exports, outputDir);
-      console.log(`Work tracking CSV saved: ${workTrackingPath}`);
-      
-      const workSummaryPath = exportWorkSummaryCsv(exports, outputDir);
-      console.log(`Work summary CSV saved: ${workSummaryPath}`);
-
+      const combinedPath = exportCombinedWorkSummaryCsv(exports, outputDir, runTimestamp);
+      console.log(`\nCombined work summary saved: ${combinedPath}`);
     }
 
     const w = 63;
@@ -157,14 +170,18 @@ ${pad('                      Export Complete!                      ')}
 ╠${border}╣
 ${pad('  Processed: ' + String(exports.length).padEnd(3) + ' repl(s)')}
 ${pad('  Output:    ' + outputDir)}
+${pad('  Run:       ' + runTimestamp)}
 ${pad('')}
-${pad('  Files created:')}
+${pad('  Per-URL directory: {ReplName} - ' + runTimestamp)}
 ${pad('    {replName}.json         - Full export per repl')}
 ${pad('    all-events.csv          - All events (messages+more)')}
 ${pad('    chat.csv                - Clean chat messages only')}
 ${pad('    chat.md                 - Markdown chat history')}
 ${pad('    work-tracking.csv       - Time, actions, cost breakdown')}
 ${pad('    work-summary.csv        - Daily totals summary')}
+${pad('')}
+${pad('  Main directory:')}
+${pad('    ' + runTimestamp + '_work-summary.csv - Combined summary')}
 ╚${border}╝
 `);
 

@@ -1624,6 +1624,7 @@ export class ReplitScraper {
         var costMatch = rawText.match(/\$[\d.]+/);
         return {
           entryType: 'checkpoint',
+          containerIdx: idx,
           timestamp: cpTimestamp,
           description: cpDescription.substring(0, 1000),
           cost: costMatch ? costMatch[0] : null
@@ -1934,7 +1935,8 @@ export class ReplitScraper {
           description: data.description || '',
           cost: data.cost,
           durationSeconds: null,
-          index: index++
+          index: index++,
+          _containerIdx: data.containerIdx
         });
       } else if (data.entryType === 'message') {
         var contentKey = data.contentKey || data.content.substring(0, 200);
@@ -1945,7 +1947,8 @@ export class ReplitScraper {
           type: data.type,
           content: data.content,
           timestamp: data.timestamp,
-          index: index++
+          index: index++,
+          _containerIdx: i
         });
       }
     }
@@ -2029,8 +2032,33 @@ export class ReplitScraper {
       }
       if (!isDuplicate) deduped.push(messages[d1]);
     }
-    for (var ri = 0; ri < deduped.length; ri++) {
-      deduped[ri].index = ri;
+    var allEntries: Array<ChatMessage | Checkpoint | WorkEntry> = [];
+    for (var ai = 0; ai < deduped.length; ai++) allEntries.push(deduped[ai]);
+    for (var ai2 = 0; ai2 < checkpoints.length; ai2++) allEntries.push(checkpoints[ai2]);
+    for (var ai3 = 0; ai3 < workEntries.length; ai3++) allEntries.push(workEntries[ai3]);
+
+    allEntries.sort(function(a, b) {
+      var ca = (a as any)._containerIdx != null ? (a as any)._containerIdx : 0;
+      var cb = (b as any)._containerIdx != null ? (b as any)._containerIdx : 0;
+      return ca - cb;
+    });
+
+    for (var si = 0; si < allEntries.length; si++) {
+      allEntries[si].index = si;
+    }
+
+    deduped = [];
+    checkpoints = [];
+    workEntries = [];
+    for (var sep = 0; sep < allEntries.length; sep++) {
+      var entry = allEntries[sep];
+      if ('type' in entry && 'content' in entry) {
+        deduped.push(entry as ChatMessage);
+      } else if ('description' in entry) {
+        checkpoints.push(entry as Checkpoint);
+      } else if ('timeWorked' in entry) {
+        workEntries.push(entry as WorkEntry);
+      }
     }
 
     if (deduped.length === 0 && checkpoints.length === 0 && workEntries.length === 0) {
