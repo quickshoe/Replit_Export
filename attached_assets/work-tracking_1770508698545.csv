@@ -1,0 +1,36 @@
+replId,timestamp,duration,durationSeconds,durationFormatted,cost,description
+t-quickshoe-llc,,Worked for 2 minutes,120,00:02:00,$0.33,Time worked2 minutesWork done19 actionsItems read518 linesCode changed+117-158Agent Usage$0.33
+t-quickshoe-llc,,Worked for 13 seconds,13,00:00:13,$0.06,Time worked13 secondsAgent Usage$0.06
+t-quickshoe-llc,,Worked for 6 minutes,360,00:06:00,$1.55,Time worked6 minutesWork done17 actionsItems read116 linesCode changed+1216-153Agent Usage$1.55
+t-quickshoe-llc,,Worked for 16 seconds,16,00:00:16,$0.36,Time worked16 secondsAgent Usage$0.36
+t-quickshoe-llc,,Worked for 15 seconds,15,00:00:15,$0.36,Time worked15 secondsWork done1 actionAgent Usage$0.36
+t-quickshoe-llc,,Worked for 1 minute,60,00:01:00,$1.22,Time worked1 minuteWork done6 actionsItems read441 linesCode changed+89-14Agent Usage$1.22
+t-quickshoe-llc,,Worked for 37 seconds,37,00:00:37,$0.38,Time worked37 secondsWork done1 actionAgent Usage$0.38
+t-quickshoe-llc,,Worked for 2 minutes,120,00:02:00,$1.26,Time worked2 minutesWork done17 actionsItems read435 linesCode changed+121-50Agent Usage$1.26
+t-quickshoe-llc,,Worked for 11 seconds,11,00:00:11,$0.29,Time worked11 secondsAgent Usage$0.29
+t-quickshoe-llc,,Worked for 16 seconds,16,00:00:16,$0.30,Time worked16 secondsWork done1 actionAgent Usage$0.30
+t-quickshoe-llc,,Worked for 1 minute,60,00:01:00,$0.83,Time worked1 minuteWork done8 actionsItems read170 linesCode changed+158-154Agent Usage$0.83
+t-quickshoe-llc,,Worked for 12 seconds,12,00:00:12,$0.37,Time worked12 secondsAgent Usage$0.37
+t-quickshoe-llc,,Worked for 23 seconds,23,00:00:23,$0.11,Time worked23 secondsAgent Usage$0.11
+t-quickshoe-llc,,Worked for 23 seconds,23,00:00:23,$0.12,Time worked23 secondsWork done1 actionAgent Usage$0.12
+t-quickshoe-llc,,Worked for 17 seconds,17,00:00:17,$0.42,Time worked17 secondsWork done1 actionAgent Usage$0.42
+t-quickshoe-llc,,Worked for 3 minutes,180,00:03:00,$1.50,Time worked3 minutesWork done19 actionsItems read518 linesCode changed+212-212Agent Usage$1.50
+t-quickshoe-llc,,Worked for 29 seconds,29,00:00:29,$0.25,Time worked29 secondsWork done1 actionAgent Usage$0.25
+t-quickshoe-llc,,Worked for 4 minutes,240,00:04:00,$1.61,Time worked4 minutesWork done21 actionsItems read490 linesCode changed+374-230Agent Usage$1.61
+t-quickshoe-llc,,Worked for 43 seconds,43,00:00:43,$0.31,Time worked43 secondsWork done1 actionAgent Usage$0.31
+t-quickshoe-llc,,Worked for 1 minute,60,00:01:00,$0.38,Time worked1 minuteWork done6 actionsItems read100 linesCode changed+135-65Agent Usage$0.38
+t-quickshoe-llc,,Worked for 18 seconds,18,00:00:18,$0.25,Time worked18 secondsWork done1 actionAgent Usage$0.25
+t-quickshoe-llc,,Worked for 1 minute,60,00:01:00,$0.44,Time worked1 minuteWork done8 actionsItems read220 linesCode changed+66-46Agent Usage$0.44
+t-quickshoe-llc,,Worked for 46 seconds,46,00:00:46,$0.45,Time worked46 secondsWork done3 actionsItems read160 linesAgent Usage$0.45
+t-quickshoe-llc,,Worked for 46 seconds,46,00:00:46,$0.20,Time worked46 secondsWork done4 actionsItems read30 linesAgent Usage$0.20
+t-quickshoe-llc,,Worked for 1 minute,60,00:01:00,$0.72,Time worked1 minuteWork done6 actionsItems read50 linesCode changed+43-43Agent Usage$0.72
+t-quickshoe-llc,,Worked for 48 seconds,48,00:00:48,$0.32,Time worked48 secondsWork done1 actionAgent Usage$0.32
+t-quickshoe-llc,,Worked for 10 minutes,600,00:10:00,$4.73,Time worked10 minutesWork done43 actionsItems read1569 linesCode changed+463-250Agent Usage$4.73
+t-quickshoe-llc,,Worked for 27 seconds,27,00:00:27,$0.20,Time worked27 secondsWork done1 actionAgent Usage$0.20
+t-quickshoe-llc,,Worked for 3 minutes,180,00:03:00,$1.31,Time worked3 minutesWork done12 actionsItems read420 linesCode changed+289-373Agent Usage$1.31
+t-quickshoe-llc,,Worked for 5 seconds,5,00:00:05,$0.31,Time worked5 secondsAgent Usage$0.31
+t-quickshoe-llc,,Worked for 1 minute,60,00:01:00,$0.80,Time worked1 minuteWork done8 actionsItems read1011 linesAgent Usage$0.80
+t-quickshoe-llc,,Worked for 46 seconds,46,00:00:46,$0.46,Time worked46 secondsWork done1 actionAgent Usage$0.46
+t-quickshoe-llc,,Worked for 5 minutes,300,00:05:00,,""" → 300 seconds), and extracts individual charge line items with their labels and dollar amounts. New types - WorkEntry and AgentUsageDetail interfaces capture duration, descriptions, and cost breakdowns. ReplExport now includes a workEntries array in the JSON output. New CSV output - agent-usage-details.csv shows individual charge line items per work session. work-tracking.csv now pulls from the richer work entry data (falling back to checkpoints if none found). The tool compiles cleanly and is"
+t-quickshoe-llc,,Worked for 5 minutes,300,00:05:00,$2.57,Time worked5 minutesWork done22 actionsItems read451 linesCode changed+596-335Agent Usage$2.57
+t-quickshoe-llc,22 minutes ago,Worked for 9 minutes,540,00:09:00,,""" for example for responses that are further up the chat. This has me thinking that the scraper isn't expanding the chat. Wherever the chat says ""Worked for XX seconds/minutes"" we need to expand that and that's where we capture the time worked, worked done, agent usage, etc. We can further expand agent usage to see where the charges come from. It would be great if you could extract the lines from ""Worked for X..."" and put them in the work-tracking.csv and have a second csv that lists all the age"
