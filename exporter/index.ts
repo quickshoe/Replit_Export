@@ -4,7 +4,7 @@ import { Command } from 'commander';
 import * as readline from 'readline';
 import * as fs from 'fs';
 import { ReplitScraper } from './scraper';
-import { saveJsonExport, exportAllEventsCsv, exportChatCsv, exportChatMarkdown, exportWorkTrackingCsv, exportWorkSummaryCsv, exportAgentUsageDetailsCsv, ensureDir } from './utils';
+import { saveJsonExport, exportAllEventsCsv, exportChatCsv, exportChatMarkdown, exportWorkTrackingCsv, exportWorkSummaryCsv, ensureDir } from './utils';
 import type { ReplExport } from './types';
 
 const OUTPUT_DIR = './exports';
@@ -146,8 +146,6 @@ async function main() {
       const workSummaryPath = exportWorkSummaryCsv(exports, outputDir);
       console.log(`Work summary CSV saved: ${workSummaryPath}`);
 
-      const agentUsagePath = exportAgentUsageDetailsCsv(exports, outputDir);
-      console.log(`Agent usage details CSV saved: ${agentUsagePath}`);
     }
 
     const w = 63;
@@ -167,7 +165,6 @@ ${pad('    chat.csv                - Clean chat messages only')}
 ${pad('    chat.md                 - Markdown chat history')}
 ${pad('    work-tracking.csv       - Time, actions, cost breakdown')}
 ${pad('    work-summary.csv        - Daily totals summary')}
-${pad('    agent-usage-details.csv - Charge line items')}
 ╚${border}╝
 `);
 

@@ -1,7 +1,7 @@
 import { chromium, Browser, BrowserContext, Page } from 'playwright';
 import * as fs from 'fs';
 import * as path from 'path';
-import type { ChatMessage, Checkpoint, WorkEntry, AgentUsageDetail, ReplExport } from './types';
+import type { ChatMessage, Checkpoint, WorkEntry, ReplExport } from './types';
 import { calculateDuration, extractReplName } from './utils';
 
 const SESSION_FILE = './playwright-session.json';
@@ -320,8 +320,6 @@ export class ReplitScraper {
     const withTimestamp = [...messages, ...workEntries, ...checkpoints].filter((e: any) => e.timestamp).length;
     const total = messages.length + workEntries.length + checkpoints.length;
     console.log(`    Items with timestamps: ${withTimestamp}/${total}`);
-    const detailCount = workEntries.reduce((sum, we) => sum + (we.chargeDetails ? we.chargeDetails.length : 0), 0);
-    console.log(`    Agent usage line items: ${detailCount}`);
 
     return result;
   }
@@ -385,66 +383,6 @@ export class ReplitScraper {
 
       return clicked > 0;
     }, index);
-  }
-
-  private async expandAgentUsageInElement(page: Page, index: number): Promise<boolean> {
-    var result = await page.evaluate(function(idx) {
-      var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
-      if (idx >= containers.length) return { clicked: false, debug: 'no container at index' };
-      var el = containers[idx];
-      var rawText = (el.textContent || '').trim();
-      if (rawText.indexOf('Agent Usage') < 0 && rawText.indexOf('agent usage') < 0) return { clicked: false, debug: 'no Agent Usage text in container' };
-
-      var debugInfo = [] as string[];
-      var allEls = el.querySelectorAll('*');
-      var bestTarget = null as any;
-      var bestSpecificity = 999;
-
-      for (var i = 0; i < allEls.length; i++) {
-        var child = allEls[i];
-        var childText = (child.textContent || '').trim();
-
-        var isAgentUsageText = false;
-        if (childText === 'Agent Usage') {
-          isAgentUsageText = true;
-        } else if (/^Agent\s+Usage\s*\$[\d.,]+$/.test(childText)) {
-          isAgentUsageText = true;
-        }
-
-        if (!isAgentUsageText) continue;
-        if (child.getAttribute('data-exporter-au-clicked') === '1') continue;
-
-        var specificity = childText.length;
-        if (specificity < bestSpecificity) {
-          bestSpecificity = specificity;
-          bestTarget = child;
-        }
-      }
-
-      if (bestTarget) {
-        var tag = bestTarget.tagName ? bestTarget.tagName.toLowerCase() : '';
-        var text = (bestTarget.textContent || '').trim();
-        debugInfo.push('Found Agent Usage element: tag=' + tag + ' text="' + text + '"');
-
-        var rect = bestTarget.getBoundingClientRect();
-        if (rect.width > 0 && rect.height > 0) {
-          bestTarget.setAttribute('data-exporter-au-clicked', '1');
-          if (bestTarget['click']) bestTarget['click']();
-          debugInfo.push('CLICKED "' + text + '"');
-          return { clicked: true, debug: debugInfo.join('; ') };
-        }
-
-        debugInfo.push('Agent Usage element found but not clickable (skipping)');
-      } else {
-        debugInfo.push('No element with exact "Agent Usage" text found');
-      }
-
-      return { clicked: false, debug: debugInfo.join('; ') };
-    }, index);
-    if (result.debug && result.debug.length > 0) {
-      console.log('  [Agent Usage] ' + (result.clicked ? 'EXPANDED' : 'NOT expanded') + ': ' + result.debug);
-    }
-    return result.clicked;
   }
 
   private async extractElementData(page: Page, index: number, lastTimestamp: string | null): Promise<any> {
@@ -565,115 +503,6 @@ export class ReplitScraper {
           if (isNaN(totalCharge)) totalCharge = null;
         }
 
-        var chargeDetails = [] as any[];
-        var chargeDebug = [] as string[];
-        var agentUsageHeading = null as any;
-        var allChildEls = el.querySelectorAll('*');
-        for (var hi = 0; hi < allChildEls.length; hi++) {
-          var hEl = allChildEls[hi];
-          var hText = (hEl.textContent || '').trim();
-          if (hText === 'Agent Usage') {
-            agentUsageHeading = hEl;
-            break;
-          }
-        }
-        if (!agentUsageHeading) {
-          for (var hi2 = 0; hi2 < allChildEls.length; hi2++) {
-            var hEl2 = allChildEls[hi2];
-            var hText2 = (hEl2.textContent || '').trim();
-            if (/^Agent\s*Usage/i.test(hText2) && hText2.length < 50) {
-              agentUsageHeading = hEl2;
-              break;
-            }
-          }
-        }
-
-        chargeDebug.push('agentUsageHeading=' + (agentUsageHeading ? 'found(tag=' + (agentUsageHeading.tagName || '').toLowerCase() + ',text=' + (agentUsageHeading.textContent || '').trim().substring(0, 40) + ')' : 'null'));
-
-        if (agentUsageHeading) {
-          var auSection = agentUsageHeading.parentElement || agentUsageHeading;
-          var auSectionEls = auSection.querySelectorAll('*');
-          var labelCandidates = [] as any[];
-          var amountCandidates = [] as any[];
-          chargeDebug.push('auSection tag=' + (auSection.tagName || '').toLowerCase() + ' children=' + auSectionEls.length);
-          for (var ci = 0; ci < auSectionEls.length; ci++) {
-            var childEl = auSectionEls[ci];
-            var headingPos = agentUsageHeading.compareDocumentPosition(childEl);
-            if (!(headingPos & 4)) continue;
-            if (childEl.children.length > 10) continue;
-            var childText = (childEl.textContent || '').trim();
-            if (childText.length === 0) continue;
-            var amtMatch = childText.match(/^\s*\$\s*([\d,.]+)\s*$/);
-            if (amtMatch) {
-              var amtVal = parseFloat(amtMatch[1].replace(/,/g, ''));
-              amountCandidates.push({ el: childEl, amount: amtVal, text: childText, rect: childEl.getBoundingClientRect() });
-              continue;
-            }
-            if (childText.length > 2 && childText.length < 200) {
-              var lowerText = childText.toLowerCase();
-              if (lowerText === 'agent usage') continue;
-              if (lowerText === 'total') continue;
-              var dollarIdx = childText.indexOf('$');
-              if (dollarIdx >= 0) {
-                var inlineAmtMatch = childText.match(/\$\s*([\d,.]+)/);
-                if (inlineAmtMatch) {
-                  var inlineLabel = childText.substring(0, dollarIdx).replace(/\s+/g, ' ').trim();
-                  var inlineAmt = parseFloat(inlineAmtMatch[1].replace(/,/g, ''));
-                  if (inlineLabel.length > 1 && !isNaN(inlineAmt) && inlineAmt > 0) {
-                    chargeDetails.push({ label: inlineLabel, amount: inlineAmt });
-                    chargeDebug.push('inline: "' + inlineLabel + '" $' + inlineAmt);
-                  }
-                }
-                continue;
-              }
-              labelCandidates.push({ el: childEl, text: childText, rect: childEl.getBoundingClientRect() });
-            }
-          }
-
-          chargeDebug.push('labels=' + labelCandidates.length + ' amounts=' + amountCandidates.length);
-
-          var usedLabels = {} as any;
-          for (var ami = 0; ami < amountCandidates.length; ami++) {
-            var amt = amountCandidates[ami];
-            var bestLabel = null as any;
-            var bestDistance = 999999;
-            for (var li = 0; li < labelCandidates.length; li++) {
-              var lbl = labelCandidates[li];
-              if (usedLabels[li]) continue;
-              var vDist = Math.abs(amt.rect.top - lbl.rect.top);
-              if (vDist < bestDistance && vDist < 150) {
-                bestDistance = vDist;
-                bestLabel = { index: li, text: lbl.text };
-              }
-            }
-            if (bestLabel) {
-              usedLabels[bestLabel.index] = true;
-              var cleanLabel = bestLabel.text.replace(/\s+/g, ' ').trim();
-              if (!isNaN(amt.amount) && amt.amount > 0) {
-                chargeDetails.push({ label: cleanLabel, amount: amt.amount });
-                chargeDebug.push('paired: "' + cleanLabel + '" $' + amt.amount);
-              }
-            } else {
-              chargeDebug.push('unpaired amount: $' + amt.amount + ' text="' + amt.text + '"');
-            }
-          }
-
-          if (chargeDetails.length > 1 && totalCharge !== null) {
-            var filtered = [] as any[];
-            var removedTotal = false;
-            for (var fi = 0; fi < chargeDetails.length; fi++) {
-              if (!removedTotal && Math.abs(chargeDetails[fi].amount - totalCharge) < 0.005) {
-                removedTotal = true;
-                continue;
-              }
-              filtered.push(chargeDetails[fi]);
-            }
-            if (filtered.length > 0) chargeDetails = filtered;
-          }
-        }
-
-        chargeDebug.push('chargeDetails=' + chargeDetails.length);
-
         return {
           entryType: 'work',
           timestamp: timestamp,
@@ -683,9 +512,7 @@ export class ReplitScraper {
           itemsReadLines: itemsReadLines,
           codeChangedPlus: codeChangedPlus,
           codeChangedMinus: codeChangedMinus,
-          agentUsage: totalCharge,
-          chargeDetails: chargeDetails,
-          chargeDebug: chargeDebug.join('; ')
+          agentUsage: totalCharge
         };
       }
 
@@ -1067,10 +894,6 @@ export class ReplitScraper {
       if (data.timestamp) lastTimestamp = data.timestamp;
 
       if (data.entryType === 'work') {
-        if (data.chargeDebug) {
-          console.log('  [Charge details debug] ' + data.chargeDebug);
-        }
-
         var weKey = 'WE|' + (data.timestamp || 'noTs') + '|' + (data.timeWorked || '') + '|' + (data.durationSeconds || 0) + '|' + (data.agentUsage != null ? data.agentUsage : 'noFee') + '|' + (data.workDoneActions != null ? data.workDoneActions : '') + '|' + (data.itemsReadLines != null ? data.itemsReadLines : '');
         if (seenKeys[weKey]) continue;
         seenKeys[weKey] = true;
@@ -1084,7 +907,6 @@ export class ReplitScraper {
           codeChangedPlus: data.codeChangedPlus,
           codeChangedMinus: data.codeChangedMinus,
           agentUsage: data.agentUsage,
-          chargeDetails: data.chargeDetails || [],
           index: index++
         });
       } else if (data.entryType === 'checkpoint') {

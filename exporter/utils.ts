@@ -232,6 +232,13 @@ export function exportWorkTrackingCsv(exports: ReplExport[], outputDir: string):
   
   for (const exp of exports) {
     if (exp.workEntries && exp.workEntries.length > 0) {
+      const sortedCheckpoints = (exp.checkpoints || [])
+        .filter(cp => cp.description && cp.description.length > 0)
+        .sort((a, b) => a.index - b.index);
+
+      const sortedMessages = (exp.messages || [])
+        .sort((a, b) => a.index - b.index);
+
       for (const we of exp.workEntries) {
         const indexKey = exp.replName + '|' + we.index;
         if (seenIndexes.has(indexKey)) {
@@ -240,9 +247,34 @@ export function exportWorkTrackingCsv(exports: ReplExport[], outputDir: string):
         }
         seenIndexes.add(indexKey);
 
-        const description = we.chargeDetails && we.chargeDetails.length > 0
-          ? we.chargeDetails.map(cd => cd.label).join('; ')
-          : '';
+        let description = '';
+        let bestCp = null as typeof sortedCheckpoints[0] | null;
+        let bestCpDist = Infinity;
+        for (const cp of sortedCheckpoints) {
+          const dist = Math.abs(cp.index - we.index);
+          if (dist < bestCpDist) {
+            bestCpDist = dist;
+            bestCp = cp;
+          }
+        }
+        if (bestCp && bestCpDist <= 5) {
+          description = bestCp.description;
+        }
+
+        if (!description) {
+          let bestMsg = null as typeof sortedMessages[0] | null;
+          for (const msg of sortedMessages) {
+            if (msg.index < we.index) {
+              bestMsg = msg;
+            } else {
+              break;
+            }
+          }
+          if (bestMsg) {
+            const content = bestMsg.content.replace(/\s+/g, ' ').trim();
+            description = content.length > 100 ? content.substring(0, 100) + '...' : content;
+          }
+        }
 
         rows.push({
           index: we.index,
@@ -393,38 +425,6 @@ export function exportWorkSummaryCsv(exports: ReplExport[], outputDir: string): 
   return filePath;
 }
 
-export function exportAgentUsageDetailsCsv(exports: ReplExport[], outputDir: string): string {
-  const rows: Record<string, any>[] = [];
-  
-  for (const exp of exports) {
-    if (!exp.workEntries) continue;
-    for (const we of exp.workEntries) {
-      if (we.chargeDetails && we.chargeDetails.length > 0) {
-        for (const detail of we.chargeDetails) {
-          rows.push({
-            replName: exp.replName,
-            timestamp: we.timestamp || '',
-            timeWorked: we.timeWorked || '',
-            lineItemLabel: detail.label,
-            lineItemAmount: detail.amount ?? '',
-          });
-        }
-      }
-    }
-  }
-  
-  const columns = [
-    { key: 'replName', label: 'Repl name' },
-    { key: 'timestamp', label: 'Timestamp' },
-    { key: 'timeWorked', label: 'Time worked' },
-    { key: 'lineItemLabel', label: 'Line item' },
-    { key: 'lineItemAmount', label: 'Amount' },
-  ];
-  const filePath = path.join(outputDir, 'agent-usage-details.csv');
-  writeCsv(columns, rows, filePath);
-  return filePath;
-}
-
 export function exportChatMarkdown(exports: ReplExport[], outputDir: string): string {
   const lines: string[] = [];
 
@@ -469,11 +469,6 @@ export function exportChatMarkdown(exports: ReplExport[], outputDir: string): st
         parts.push(`Code: +${we.codeChangedPlus || 0}/-${we.codeChangedMinus || 0}`);
       }
       if (we.agentUsage != null) parts.push(`Agent usage: $${we.agentUsage}`);
-      if (we.chargeDetails && we.chargeDetails.length > 0) {
-        for (const detail of we.chargeDetails) {
-          parts.push(`  - ${detail.label}: $${detail.amount}`);
-        }
-      }
 
       allEvents.push({
         timestamp: we.timestamp,

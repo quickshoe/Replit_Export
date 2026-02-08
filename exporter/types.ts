@@ -22,13 +22,7 @@ export interface WorkEntry {
   codeChangedPlus: number | null;
   codeChangedMinus: number | null;
   agentUsage: number | null;
-  chargeDetails: AgentUsageDetail[];
   index: number;
-}
-
-export interface AgentUsageDetail {
-  label: string;
-  amount: number | null;
 }
 
 export interface ReplExport {
