@@ -78,6 +78,13 @@ npx tsx exporter/index.ts --clear-session
 
 ## Recent Changes
 
+- 2026-02-08: Timestamp toggle and extraction fix:
+  - Replit's timestamps are <span> elements with class Timestamp-module, role="switch", aria-checked="false"
+  - Clicking them toggles from relative ("4 days ago") to absolute ("3:49 pm, Feb 03, 2026")
+  - Added step in expandAllCollapsedSections to click all timestamp switches before extraction
+  - Pre-computation now prioritizes [class*="Timestamp-module"] elements over <time> elements
+  - Both primary and fallback timestamp maps updated with Timestamp-module as first priority
+  - dom-debug now captures role and aria-checked attributes on timestamp elements
 - 2026-02-08: Agent Usage extraction fix and terminal formatting:
   - Agent Usage detail extraction now finds the "Agent Usage" heading element first, then only extracts $amounts and labels from DOM elements that appear AFTER that heading (uses compareDocumentPosition). This prevents capturing "Time worked", "Work done", "Items read", "Code changed" which appear ABOVE the heading.
   - Terminal box formatting uses padEnd for consistent alignment regardless of number length

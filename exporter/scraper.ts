@@ -435,6 +435,36 @@ export class ReplitScraper {
     }
 
     await page.waitForTimeout(1000);
+
+    // Toggle timestamp switches from relative ("4 days ago") to absolute ("3:49 pm, Feb 03, 2026")
+    // These are <span> elements with class Timestamp-module and role="switch" aria-checked="false"
+    console.log('  Toggling timestamps to absolute format...');
+    var timestampsToggled = await page.evaluate(function() {
+      var toggled = 0;
+      var tsEls = document.querySelectorAll('[class*="Timestamp-module"], [class*="timestamp-module"]');
+      for (var i = 0; i < tsEls.length; i++) {
+        var el = tsEls[i];
+        var role = el.getAttribute('role');
+        var checked = el.getAttribute('aria-checked');
+        if (role === 'switch' && checked === 'false') {
+          var rect = el.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) {
+            if (el['click']) el['click']();
+            toggled++;
+          }
+        }
+      }
+      return toggled;
+    });
+
+    if (timestampsToggled > 0) {
+      console.log(`  Toggled ${timestampsToggled} timestamps to absolute format`);
+      await page.waitForTimeout(1500);
+    } else {
+      console.log('  No timestamp switches found to toggle');
+    }
+
+    await page.waitForTimeout(500);
   }
 
   private async findChatContainer(page: Page): Promise<string | null> {
@@ -717,13 +747,15 @@ export class ReplitScraper {
         }
       }
 
-      var timeEls = document.querySelectorAll('time, [datetime], [class*="timestamp"], [class*="Timestamp"], [class*="timeAgo"], [class*="TimeAgo"], [class*="relativeTime"]');
-      for (var ti = 0; ti < Math.min(10, timeEls.length); ti++) {
+      var timeEls = document.querySelectorAll('time, [datetime], [class*="timestamp"], [class*="Timestamp"], [class*="Timestamp-module"], [class*="timeAgo"], [class*="TimeAgo"], [class*="relativeTime"]');
+      for (var ti = 0; ti < Math.min(15, timeEls.length); ti++) {
         info.timeElements.push({
           tag: timeEls[ti].tagName,
           className: (timeEls[ti].getAttribute('class') || '').substring(0, 200),
           datetime: timeEls[ti].getAttribute('datetime') || '',
           title: timeEls[ti].getAttribute('title') || '',
+          role: timeEls[ti].getAttribute('role') || '',
+          ariaChecked: timeEls[ti].getAttribute('aria-checked') || '',
           textContent: (timeEls[ti].textContent || '').trim().substring(0, 100),
           outerHTML: timeEls[ti].outerHTML.substring(0, 500),
           parentClass: (timeEls[ti].parentElement ? (timeEls[ti].parentElement as Element).getAttribute('class') || '' : '').substring(0, 200)
@@ -771,6 +803,30 @@ export class ReplitScraper {
       console.log('  Note: Could not dump DOM structure for debugging');
     }
 
+    // Re-toggle any timestamps that may have loaded after initial toggle
+    // (lazy-loaded content from scroll or section expansion)
+    var lateToggles = await page.evaluate(function() {
+      var toggled = 0;
+      var tsEls = document.querySelectorAll('[class*="Timestamp-module"], [class*="timestamp-module"]');
+      for (var i = 0; i < tsEls.length; i++) {
+        var el = tsEls[i];
+        var role = el.getAttribute('role');
+        var checked = el.getAttribute('aria-checked');
+        if (role === 'switch' && checked === 'false') {
+          var rect = el.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) {
+            if (el['click']) el['click']();
+            toggled++;
+          }
+        }
+      }
+      return toggled;
+    });
+    if (lateToggles > 0) {
+      console.log(`  Toggled ${lateToggles} additional late-loaded timestamps`);
+      await page.waitForTimeout(1000);
+    }
+
     // Pre-compute timestamps for all event containers in a separate evaluate
     // to avoid nested function definitions inside page.evaluate (ES5 safety)
     var timestampMap = await page.evaluate(function() {
@@ -781,7 +837,21 @@ export class ReplitScraper {
       for (var idx = 0; idx < containers.length; idx++) {
         var el = containers[idx];
 
-        // 1. <time> element inside
+        // 1. Timestamp-module span elements (Replit's actual timestamp components)
+        // After toggling, these contain absolute timestamps like "3:49 pm, Feb 03, 2026"
+        var tsModuleEls = el.querySelectorAll('[class*="Timestamp-module"], [class*="timestamp-module"]');
+        var foundTsModule = false;
+        for (var tmi = 0; tmi < tsModuleEls.length; tmi++) {
+          var tmText = (tsModuleEls[tmi].textContent || '').trim();
+          if (tmText.length > 0 && tmText.length < 100) {
+            results[idx] = tmText;
+            foundTsModule = true;
+            break;
+          }
+        }
+        if (foundTsModule) continue;
+
+        // 2. <time> element inside (fallback for other UIs)
         var timeEl = el.querySelector('time');
         if (timeEl) {
           var dt = timeEl.getAttribute('datetime');
@@ -790,15 +860,20 @@ export class ReplitScraper {
           if (tt.length > 0 && tt.length < 100) { results[idx] = tt; continue; }
         }
 
-        // 2. Own datetime/title attribute
+        // 3. Own datetime/title attribute
         var elDatetime = el.getAttribute('datetime');
         if (elDatetime) { results[idx] = elDatetime; continue; }
         var elTitle = el.getAttribute('title');
         if (elTitle && elTitle.match(/\d{4}/)) { results[idx] = elTitle; continue; }
 
-        // 3. Parent <time> element
+        // 4. Parent Timestamp-module or <time> element
         var parent = el.parentElement;
         if (parent) {
+          var parentTsModule = parent.querySelector('[class*="Timestamp-module"]');
+          if (parentTsModule) {
+            var ptmText = (parentTsModule.textContent || '').trim();
+            if (ptmText.length > 0 && ptmText.length < 100) { results[idx] = ptmText; continue; }
+          }
           var parentTime = parent.querySelector('time');
           if (parentTime) {
             var pdt = parentTime.getAttribute('datetime');
@@ -808,13 +883,18 @@ export class ReplitScraper {
           }
         }
 
-        // 4. Siblings with timestamp
+        // 5. Siblings with timestamp
         var foundSibling = false;
         if (parent) {
           var siblings = parent.children;
           for (var si = 0; si < siblings.length; si++) {
             var sib = siblings[si];
             if (sib === el) continue;
+            var sibTsModule = sib.querySelector('[class*="Timestamp-module"]');
+            if (sibTsModule) {
+              var stmText = (sibTsModule.textContent || '').trim();
+              if (stmText.length > 0 && stmText.length < 100) { results[idx] = stmText; foundSibling = true; break; }
+            }
             var sibTime = sib.querySelector('time');
             if (sibTime) {
               var sdt = sibTime.getAttribute('datetime');
@@ -831,7 +911,7 @@ export class ReplitScraper {
         }
         if (foundSibling) continue;
 
-        // 5. Timestamp CSS class descendants
+        // 6. Timestamp CSS class descendants (broader search)
         var tsEls = el.querySelectorAll('[class*="timestamp"], [class*="Timestamp"], [class*="timeAgo"], [class*="TimeAgo"], [class*="relativeTime"]');
         var foundTsClass = false;
         for (var tsi = 0; tsi < tsEls.length; tsi++) {
@@ -840,16 +920,16 @@ export class ReplitScraper {
         }
         if (foundTsClass) continue;
 
-        // 6. Real timestamp pattern: "3:49 pm, Feb 03, 2026"
+        // 7. Real timestamp pattern: "3:49 pm, Feb 03, 2026"
         var rawText = (el.textContent || '');
         var realTsMatch = rawText.match(/(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})/i);
         if (realTsMatch) { results[idx] = realTsMatch[1]; continue; }
 
-        // 7. Relative time: "4 days ago"
+        // 8. Relative time: "4 days ago"
         var relMatch = rawText.match(/(\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago)/i);
         if (relMatch) { results[idx] = relMatch[1]; continue; }
 
-        // 8. ISO timestamp
+        // 9. ISO timestamp
         var isoMatch = rawText.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/);
         if (isoMatch) { results[idx] = isoMatch[1]; continue; }
       }
@@ -875,6 +955,20 @@ export class ReplitScraper {
       for (var idx = 0; idx < els.length; idx++) {
         var el = els[idx];
 
+        // 1. Timestamp-module span elements (Replit's actual timestamp components)
+        var tsModuleEls = el.querySelectorAll('[class*="Timestamp-module"], [class*="timestamp-module"]');
+        var foundTsModule = false;
+        for (var tmi = 0; tmi < tsModuleEls.length; tmi++) {
+          var tmText = (tsModuleEls[tmi].textContent || '').trim();
+          if (tmText.length > 0 && tmText.length < 100) {
+            results[idx] = tmText;
+            foundTsModule = true;
+            break;
+          }
+        }
+        if (foundTsModule) continue;
+
+        // 2. <time> element (fallback)
         var timeEl = el.querySelector('time');
         if (timeEl) {
           var dt = timeEl.getAttribute('datetime');
@@ -890,6 +984,11 @@ export class ReplitScraper {
 
         var parent = el.parentElement;
         if (parent) {
+          var parentTsModule = parent.querySelector('[class*="Timestamp-module"]');
+          if (parentTsModule) {
+            var ptmText = (parentTsModule.textContent || '').trim();
+            if (ptmText.length > 0 && ptmText.length < 100) { results[idx] = ptmText; continue; }
+          }
           var parentTime = parent.querySelector('time');
           if (parentTime) {
             var pdt = parentTime.getAttribute('datetime');
@@ -905,6 +1004,11 @@ export class ReplitScraper {
           for (var si = 0; si < siblings.length; si++) {
             var sib = siblings[si];
             if (sib === el) continue;
+            var sibTsModule = sib.querySelector('[class*="Timestamp-module"]');
+            if (sibTsModule) {
+              var stmText = (sibTsModule.textContent || '').trim();
+              if (stmText.length > 0 && stmText.length < 100) { results[idx] = stmText; foundSibling = true; break; }
+            }
             var sibTime = sib.querySelector('time');
             if (sibTime) {
               var sdt = sibTime.getAttribute('datetime');
