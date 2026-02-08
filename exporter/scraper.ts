@@ -23,6 +23,7 @@ const LOAD_MORE_SELECTORS = [
 export class ReplitScraper {
   private browser: Browser | null = null;
   private context: BrowserContext | null = null;
+  private page: Page | null = null;
   private verbose: boolean = false;
 
   setVerbose(v: boolean): void { this.verbose = v; }
@@ -46,21 +47,20 @@ export class ReplitScraper {
     } else {
       this.context = await this.browser.newContext();
     }
+
+    this.page = await this.context.newPage();
   }
 
   async minimizeWindow(): Promise<void> {
-    if (!this.context) return;
+    if (!this.page) return;
     try {
-      const pages = this.context.pages();
-      if (pages.length > 0) {
-        const cdp = await pages[0].context().newCDPSession(pages[0]);
-        const { windowId } = await cdp.send('Browser.getWindowForTarget');
-        await cdp.send('Browser.setWindowBounds', {
-          windowId,
-          bounds: { windowState: 'minimized' },
-        });
-        await cdp.detach();
-      }
+      const cdp = await this.page.context().newCDPSession(this.page);
+      const { windowId } = await cdp.send('Browser.getWindowForTarget');
+      await cdp.send('Browser.setWindowBounds', {
+        windowId,
+        bounds: { windowState: 'minimized' },
+      });
+      await cdp.detach();
     } catch {
       // Minimize is best-effort; some environments may not support it
     }
@@ -69,8 +69,7 @@ export class ReplitScraper {
   async waitForLogin(page?: Page): Promise<void> {
     if (!this.context) throw new Error('Browser not initialized');
 
-    const loginPage = page || await this.context.newPage();
-    const shouldClosePage = !page;
+    const loginPage = page || this.page || await this.context.newPage();
     
     const currentUrl = loginPage.url();
     if (!currentUrl.includes('/login') && !currentUrl.includes('/signup') && !currentUrl.includes('/auth') && !currentUrl.includes('github.com')) {
@@ -176,13 +175,10 @@ export class ReplitScraper {
       }
     }
 
-    if (shouldClosePage) {
-      await loginPage.close();
-    }
   }
 
   async checkLoggedIn(): Promise<boolean> {
-    if (!this.context) throw new Error('Browser not initialized');
+    if (!this.context || !this.page) throw new Error('Browser not initialized');
 
     const cookies = await this.context.cookies('https://replit.com');
     const hasAuthCookies = cookies.some(c => 
@@ -196,26 +192,22 @@ export class ReplitScraper {
       return false;
     }
 
-    const page = await this.context.newPage();
     try {
-      const response = await page.goto('https://replit.com/~', { 
+      await this.page.goto('https://replit.com/~', { 
         waitUntil: 'domcontentloaded',
         timeout: 30000 
       });
       
-      await page.waitForTimeout(1000);
+      await this.page.waitForTimeout(1000);
       
-      const currentUrl = page.url();
+      const currentUrl = this.page.url();
       
       if (this.isLoginPage(currentUrl)) {
-        await page.close();
         return false;
       }
       
-      await page.close();
       return true;
     } catch {
-      await page.close();
       return false;
     }
   }
@@ -238,21 +230,20 @@ export class ReplitScraper {
   }
 
   async scrapeRepl(replUrl: string, outputDir: string = './exports'): Promise<ReplExport> {
-    if (!this.context) throw new Error('Browser not initialized');
+    if (!this.context || !this.page) throw new Error('Browser not initialized');
 
     const replName = extractReplName(replUrl);
     const scrapeStartTime = Date.now();
     console.log(`\nScraping: ${replName}`);
 
     const fullUrl = replUrl.startsWith('http') ? replUrl : `https://replit.com/${replUrl}`;
-    let page: Page;
+    const page: Page = this.page;
     let messages: ChatMessage[] = [];
     let checkpoints: Checkpoint[] = [];
     let workEntries: WorkEntry[] = [];
     let gitCommits: GitCommit[] = [];
 
     try {
-    page = await this.context.newPage();
     console.log(`Navigating to: ${fullUrl}`);
     
     try {
@@ -382,8 +373,6 @@ export class ReplitScraper {
       console.log('Note: Could not update session file');
     }
 
-    await page.close();
-
     } catch (disconnectErr) {
       const errMsg = (disconnectErr as Error).message || '';
       if (errMsg.indexOf('Target closed') >= 0 ||
@@ -441,31 +430,37 @@ export class ReplitScraper {
       //  1. Stop button in the chat input area (primary — definitive "working")
       //  2. Last message pattern (secondary — confirms idle or supports working)
 
-      // Step 1: Find the agent chat panel using known Replit class patterns.
-      var chatPanel = document.querySelector(
-        '[class*="AgentChat"], [class*="agentChat"], [class*="agent-chat"]'
-      );
+      // Step 1: Find the agent chat panel using broad class patterns.
+      var panelSelectors = [
+        '[class*="AgentChat"]', '[class*="agentChat"]', '[class*="agent-chat"]',
+        '[class*="ChatPanel"]', '[class*="chatPanel"]', '[class*="chat-panel"]',
+        '[data-testid*="chat"]',
+        '[class*="AiChat"]', '[class*="aiChat"]'
+      ];
+      var chatPanel = null as Element | null;
+      for (var ps = 0; ps < panelSelectors.length; ps++) {
+        chatPanel = document.querySelector(panelSelectors[ps]);
+        if (chatPanel) break;
+      }
 
-      // If we can't find the agent chat panel, we cannot reliably detect.
-      // Return idle to avoid false positives, but warn in debug.
-      if (!chatPanel) return { working: false, debug: 'Agent chat panel not found — assuming idle' };
+      // If we can't find a named chat panel, fall back to searching the whole document
+      var searchRoot = (chatPanel || document) as Element | Document;
 
-      // Step 2: Within the chat panel, find the form containing a textarea.
-      // This is the agent chat input where the user types messages.
-      var forms = chatPanel.querySelectorAll('form');
-      var chatForm: Element | null = null;
-      for (var f = 0; f < forms.length; f++) {
-        if (forms[f].querySelector('textarea')) {
-          chatForm = forms[f];
+      // Step 2: Find a form containing a textarea (the chat input area).
+      var allForms = searchRoot.querySelectorAll('form');
+      var chatForm = null as Element | null;
+      for (var f = 0; f < allForms.length; f++) {
+        if (allForms[f].querySelector('textarea')) {
+          chatForm = allForms[f];
           break;
         }
       }
-      // Fallback: find textarea directly in chat panel, walk up to button container
+      // Fallback: find textarea anywhere in search root, walk up to find button container
       if (!chatForm) {
-        var textareas = chatPanel.querySelectorAll('textarea');
+        var textareas = searchRoot.querySelectorAll('textarea');
         for (var t = 0; t < textareas.length; t++) {
-          var parent: HTMLElement | null = textareas[t].parentElement;
-          while (parent && parent !== chatPanel) {
+          var parent = textareas[t].parentElement as Element | null;
+          while (parent && parent !== (searchRoot as Element)) {
             if (parent.querySelector('button')) {
               chatForm = parent;
               break;
@@ -518,7 +513,7 @@ export class ReplitScraper {
       // If the last message is "Worked for X" / "Time worked", agent is idle.
       // If the chat form wasn't found (ambiguous state), use this to decide.
       // Look for event/message containers within the chat panel.
-      var containers = chatPanel.querySelectorAll(
+      var containers = searchRoot.querySelectorAll(
         '[class*="event" i], [class*="Event"], [class*="message" i], [class*="Message"], ' +
         '[class*="ChatItem"], [class*="chatItem"], [class*="FeedItem"], [class*="feedItem"]'
       );
@@ -546,6 +541,43 @@ export class ReplitScraper {
 
   private async waitForAgentIdle(page: Page): Promise<void> {
     console.log('\nPre-check: Checking if Replit Agent is currently working...');
+
+    // Wait for the chat panel to appear in the DOM before checking
+    const chatPanelSelector = [
+      '[class*="AgentChat"]',
+      '[class*="agentChat"]',
+      '[class*="agent-chat"]',
+      '[class*="ChatPanel"]',
+      '[class*="chatPanel"]',
+      '[class*="chat-panel"]',
+      '[data-testid*="chat"]',
+      '[class*="AiChat"]',
+      '[class*="aiChat"]',
+      'form:has(textarea)',
+    ].join(', ');
+
+    let chatPanelFound = false;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        await page.waitForSelector(chatPanelSelector, { timeout: 5000 });
+        chatPanelFound = true;
+        break;
+      } catch {
+        if (attempt < 4) {
+          console.log(`  Waiting for chat panel to load... (attempt ${attempt + 1}/5)`);
+          await page.waitForTimeout(2000);
+        }
+      }
+    }
+
+    if (!chatPanelFound) {
+      console.log('  Chat panel not found after waiting. Assuming agent is idle.');
+      console.log('\n========================================');
+      console.log('IMPORTANT: Do NOT use Replit Agent while the scraper is running.');
+      console.log('Agent activity during scraping will cause unreliable results.');
+      console.log('========================================\n');
+      return;
+    }
 
     var result = await this.checkAgentWorking(page);
     console.log('  Detection: ' + result.debug);
@@ -2300,6 +2332,7 @@ export class ReplitScraper {
       await this.browser.close();
       this.browser = null;
       this.context = null;
+      this.page = null;
     }
   }
 
