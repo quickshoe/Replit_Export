@@ -23,6 +23,7 @@ export interface WorkEntry {
   codeChangedMinus: number | null;
   agentUsage: number | null;
   index: number;
+  _containerIdx?: number;
 }
 
 export interface ReplExport {

@@ -399,7 +399,12 @@ export class ReplitScraper {
       for (var i = 0; i < containers.length; i++) {
         var el = containers[i];
         var text = (el.textContent || '').trim();
-        if (/Worked\s+for\s+/i.test(text) || (el.getAttribute('class') || '').indexOf('EndOfRunSummary') >= 0) {
+        var elClass = (el.getAttribute('class') || '').toLowerCase();
+        var isEndOfRun = elClass.indexOf('endofrunsummary') >= 0 || el.querySelector('[class*="EndOfRunSummary"]') !== null;
+        var hasExpandable = el.querySelector('[aria-expanded]') !== null ||
+          elClass.indexOf('xpandable') >= 0 ||
+          el.querySelector('[class*="xpandable"], [class*="Expandable"]') !== null;
+        if (isEndOfRun || (/Worked\s+for\s+/i.test(text) && hasExpandable)) {
           indices.push(i);
         }
       }
@@ -634,7 +639,15 @@ export class ReplitScraper {
       }
       var workedMatch = rawText.match(/Worked\s+for\s+(\d+\s*(?:second|minute|hour|day|week|month|year)s?(?:\s*(?:and\s*)?\d+\s*(?:second|minute|hour|day|week|month|year)s?)*)/i);
 
-      if (endOfRunRoot || workedMatch) {
+      var isExpandableWork = false;
+      if (workedMatch && !endOfRunRoot) {
+        var hasExpanded = el.querySelector('[aria-expanded]') !== null;
+        var hasExpandable = (el.getAttribute('class') || '').indexOf('xpandable') >= 0 ||
+          el.querySelector('[class*="xpandable"], [class*="Expandable"]') !== null;
+        isExpandableWork = hasExpanded || hasExpandable;
+      }
+
+      if (endOfRunRoot || (workedMatch && isExpandableWork)) {
         var wDuration = workedMatch ? workedMatch[1] : '';
 
         var hoverPrecise = el.getAttribute('data-precise-duration');
@@ -701,6 +714,7 @@ export class ReplitScraper {
 
         return {
           entryType: 'work',
+          containerIdx: idx,
           timestamp: timestamp,
           timeWorked: wDuration || '',
           durationSeconds: wDurationSecs > 0 ? wDurationSecs : null,
@@ -1101,7 +1115,8 @@ export class ReplitScraper {
           codeChangedPlus: data.codeChangedPlus,
           codeChangedMinus: data.codeChangedMinus,
           agentUsage: data.agentUsage,
-          index: index++
+          index: index++,
+          _containerIdx: data.containerIdx
         });
       } else if (data.entryType === 'checkpoint') {
         checkpoints.push({
@@ -1126,6 +1141,65 @@ export class ReplitScraper {
     }
 
     console.log(`\r  Extracted from ${totalContainers} containers`);
+
+    // Phase 3.5: Re-read precise durations using deterministic container index mapping
+    if (workEntries.length > 0) {
+      var containerIndices = workEntries
+        .map(function(we) { return we._containerIdx; })
+        .filter(function(idx) { return idx != null; }) as number[];
+
+      if (containerIndices.length > 0) {
+        var precisionMap = await page.evaluate(function(indices) {
+          var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
+          var result = {} as Record<string, string>;
+          for (var pi = 0; pi < indices.length; pi++) {
+            var ci = indices[pi];
+            if (ci < containers.length) {
+              var attr = containers[ci].getAttribute('data-precise-duration');
+              if (attr && attr.length > 0) {
+                result[String(ci)] = attr;
+              }
+            }
+          }
+          return result;
+        }, containerIndices);
+
+        var mergeCount = 0;
+        for (var wi = 0; wi < workEntries.length; wi++) {
+          var we = workEntries[wi];
+          if (we._containerIdx == null) continue;
+          var preciseVal = precisionMap[String(we._containerIdx)];
+          if (!preciseVal || preciseVal.length === 0) continue;
+
+          var cleanPrecise = preciseVal.replace(/^Worked\s+for\s+/i, '').trim();
+          if (!/\d+\s*(second|minute|hour|day|week|month|year)s?/i.test(cleanPrecise)) continue;
+
+          var newSecs = 0;
+          var pParts = cleanPrecise.match(/(\d+)\s*(second|minute|hour|day|week|month|year)s?/gi);
+          if (pParts) {
+            for (var pp = 0; pp < pParts.length; pp++) {
+              var pMatch = pParts[pp].match(/(\d+)\s*(second|minute|hour|day|week|month|year)/i);
+              if (pMatch) {
+                var pVal = parseInt(pMatch[1], 10);
+                var pUnit = pMatch[2].toLowerCase();
+                if (pUnit === 'second') newSecs += pVal;
+                else if (pUnit === 'minute') newSecs += pVal * 60;
+                else if (pUnit === 'hour') newSecs += pVal * 3600;
+                else if (pUnit === 'day') newSecs += pVal * 86400;
+              }
+            }
+          }
+          if (newSecs > 0 && (newSecs !== we.durationSeconds || cleanPrecise !== we.timeWorked)) {
+            console.log(`  [Precision merge] Container ${we._containerIdx}: "${we.timeWorked}" -> "${cleanPrecise}" (${newSecs}s)`);
+            workEntries[wi] = { ...we, timeWorked: cleanPrecise, durationSeconds: newSecs };
+            mergeCount++;
+          }
+        }
+        if (mergeCount > 0) {
+          console.log(`  Phase 3.5: Merged ${mergeCount} precise durations into work entries`);
+        }
+      }
+    }
 
     var deduped: ChatMessage[] = [];
     for (var d1 = 0; d1 < messages.length; d1++) {

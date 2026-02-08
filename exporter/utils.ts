@@ -149,7 +149,10 @@ function writeCsv(columns: { key: string; label: string }[], rows: Record<string
 export function saveJsonExport(data: ReplExport, outputDir: string): string {
   const safeName = data.replName.replace(/[^a-zA-Z0-9-_]/g, '_');
   const filePath = path.join(outputDir, `${safeName}.json`);
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
+  fs.writeFileSync(filePath, JSON.stringify(data, function(key, value) {
+    if (key === '_containerIdx') return undefined;
+    return value;
+  }, 2), 'utf-8');
   return filePath;
 }
 
