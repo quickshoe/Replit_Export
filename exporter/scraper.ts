@@ -269,13 +269,21 @@ export class ReplitScraper {
     let gitCommits: GitCommit[] = [];
 
     try {
-    console.log(`Navigating to: ${fullUrl}`);
-    
-    try {
-      await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      console.log('Page DOM loaded successfully.');
-    } catch (err) {
-      console.log('Navigation timeout on domcontentloaded, continuing anyway...');
+    const currentBrowserUrl = page.url();
+    const normalizeUrl = (u: string) => u.replace(/\/+$/, '').replace(/\?.*$/, '').toLowerCase();
+    const alreadyOnPage = normalizeUrl(currentBrowserUrl).includes(normalizeUrl(fullUrl)) ||
+      normalizeUrl(fullUrl).includes(normalizeUrl(currentBrowserUrl).replace('https://replit.com', ''));
+
+    if (alreadyOnPage && currentBrowserUrl.startsWith('http') && !this.isLoginPage(currentBrowserUrl)) {
+      console.log(`Already on target URL, skipping navigation: ${currentBrowserUrl}`);
+    } else {
+      console.log(`Navigating to: ${fullUrl}`);
+      try {
+        await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        console.log('Page DOM loaded successfully.');
+      } catch (err) {
+        console.log('Navigation timeout on domcontentloaded, continuing anyway...');
+      }
     }
     
     console.log('Waiting for page to settle...');
@@ -481,33 +489,78 @@ export class ReplitScraper {
 
     await page.waitForTimeout(2000);
 
-    // Read the top commit description
+    // Read the top commit description using content-based detection
     var topCommit = await page.evaluate(function() {
-      // Look for commit message elements
-      var msgSelectors = [
-        '[class*="commit" i] [class*="message" i]',
-        '[class*="commit" i] [class*="description" i]',
-        '[class*="commit" i] [class*="summary" i]',
-        '[class*="CommitList"] li'
+      var relTimePattern = /^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i;
+      var absTimePattern = /^\d{1,2}:\d{2}\s*(?:am|pm)/i;
+      var justNowPattern = /^just\s+now$/i;
+      var skipTexts = [
+        'remote updates', 'sync changes', 'pull', 'push', 'commit',
+        'there are no changes to commit', 'commit & push', 'commit all',
+        'last fetched', 'origin/main', 'upstream', 'main'
       ];
-      for (var s = 0; s < msgSelectors.length; s++) {
-        var els = document.querySelectorAll(msgSelectors[s]);
-        if (els.length > 0) {
-          var firstText = (els[0].textContent || '').trim();
-          if (firstText.length > 3) {
-            return firstText;
-          }
+
+      // Find the git panel by content
+      var panels = document.querySelectorAll('[role="tabpanel"]');
+      var gitPanel = null;
+      for (var p = 0; p < panels.length; p++) {
+        var style = window.getComputedStyle(panels[p]);
+        if (style.opacity === '0' || style.display === 'none') continue;
+        var pText = (panels[p].textContent || '').substring(0, 2000);
+        if (pText.indexOf('Sync Changes') >= 0 || pText.indexOf('Remote Updates') >= 0) {
+          gitPanel = panels[p];
+          break;
         }
       }
-      // Broader fallback: find elements with "commit" class and get first text
-      var allCommit = document.querySelectorAll('[class*="commit" i]');
-      for (var c = 0; c < allCommit.length; c++) {
-        var children = allCommit[c].children;
-        for (var ch = 0; ch < children.length; ch++) {
-          var childText = (children[ch].textContent || '').trim();
-          if (childText.length > 5 && childText.length < 500) {
-            return childText;
+      if (!gitPanel) return null;
+
+      // Find the first timestamp element, then look at its container for the commit message
+      var allEls = gitPanel.querySelectorAll('*');
+      for (var i = 0; i < allEls.length; i++) {
+        var el = allEls[i];
+        if (el.children.length > 0) continue;
+        var txt = (el.textContent || '').trim();
+        if (txt.length < 3 || txt.length > 80) continue;
+        if (txt.indexOf('last fetched') >= 0) continue;
+        if (relTimePattern.test(txt) || absTimePattern.test(txt) || justNowPattern.test(txt)) {
+          // Found a timestamp — walk up to find its commit container and extract message
+          var container = el;
+          for (var d = 0; d < 8; d++) {
+            var parent = container.parentElement;
+            if (!parent || parent === gitPanel) break;
+            if (parent.children.length >= 3) break;
+            container = parent;
           }
+          // Find message text within the container (longest non-timestamp/non-skip text)
+          var kids = container.querySelectorAll('*');
+          var bestMsg = '';
+          for (var k = 0; k < kids.length; k++) {
+            var kid = kids[k];
+            if (kid.children.length > 0) continue;
+            var kidText = (kid.textContent || '').trim();
+            if (kidText.length < 5 || kidText.length > 500) continue;
+            if (relTimePattern.test(kidText) || justNowPattern.test(kidText)) continue;
+            if (/^\d{1,2}:\d{2}\s*(?:am|pm)/i.test(kidText)) continue;
+            if (kidText.length <= 3) continue;
+            var kidLower = kidText.toLowerCase();
+            var isSkip = false;
+            for (var si = 0; si < skipTexts.length; si++) {
+              if (kidLower === skipTexts[si]) { isSkip = true; break; }
+            }
+            if (isSkip) continue;
+            if (kidText.length > bestMsg.length) bestMsg = kidText;
+          }
+          if (bestMsg) return bestMsg;
+        }
+      }
+
+      // Fallback: class-name-based selectors for older UI
+      var commitSels = ['[class*="commit" i] [class*="message" i]', '[class*="CommitList"] li'];
+      for (var s = 0; s < commitSels.length; s++) {
+        var els = document.querySelectorAll(commitSels[s]);
+        if (els.length > 0) {
+          var firstText = (els[0].textContent || '').trim();
+          if (firstText.length > 3) return firstText;
         }
       }
       return null;
@@ -969,12 +1022,42 @@ export class ReplitScraper {
 
     while (scrollAttempts < maxScrollAttempts) {
       var currentCount = await page.evaluate(function() {
-        var commitEls = document.querySelectorAll(
-          '[class*="commit" i], [class*="CommitList"] li, ' +
-          '[class*="commit-message"], [class*="CommitMessage"], ' +
-          '[data-testid*="commit"]'
-        );
-        return commitEls.length;
+        // Count timestamp-bearing elements inside the git panel as a proxy for commit count
+        var timePattern = /\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago/i;
+        var absTimePattern = /\d{1,2}:\d{2}\s*(?:am|pm)/i;
+        var absDatePattern = /(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d{1,2}/i;
+        var count = 0;
+
+        // Find the git panel by content
+        var panels = document.querySelectorAll('[role="tabpanel"]');
+        var gitPanel = null;
+        for (var p = 0; p < panels.length; p++) {
+          var style = window.getComputedStyle(panels[p]);
+          if (style.opacity === '0' || style.display === 'none') continue;
+          var pText = (panels[p].textContent || '').substring(0, 2000);
+          if (pText.indexOf('Sync Changes') >= 0 || pText.indexOf('Remote Updates') >= 0) {
+            gitPanel = panels[p];
+            break;
+          }
+        }
+        if (!gitPanel) return 0;
+
+        // Count elements with timestamps inside the git panel (each commit has a timestamp)
+        var allEls = gitPanel.querySelectorAll('*');
+        for (var i = 0; i < allEls.length; i++) {
+          var el = allEls[i];
+          if (el.children.length > 0) continue;
+          var txt = (el.textContent || '').trim();
+          if (txt.length > 3 && txt.length < 80) {
+            if (timePattern.test(txt) || absTimePattern.test(txt) || absDatePattern.test(txt)) {
+              // Exclude header timestamps like "last fetched X ago"
+              if (txt.indexOf('last fetched') < 0) {
+                count++;
+              }
+            }
+          }
+        }
+        return count;
       });
 
       if (currentCount === lastCommitCount) {
@@ -986,16 +1069,24 @@ export class ReplitScraper {
       }
 
       await page.evaluate(function() {
-        var panels = document.querySelectorAll(
-          '[class*="git" i], [class*="commit" i], [class*="VersionControl"], ' +
-          '[class*="history" i], [role="tabpanel"]'
-        );
+        // Find the git panel's scrollable container by content and scroll it
+        var panels = document.querySelectorAll('[role="tabpanel"]');
         var scrolled = false;
-        for (var i = 0; i < panels.length; i++) {
-          var el = panels[i];
-          if (el.scrollHeight > el.clientHeight + 50) {
-            el.scrollTop = el.scrollHeight;
-            scrolled = true;
+        for (var p = 0; p < panels.length; p++) {
+          var style = window.getComputedStyle(panels[p]);
+          if (style.opacity === '0' || style.display === 'none') continue;
+          var pText = (panels[p].textContent || '').substring(0, 2000);
+          if (pText.indexOf('Sync Changes') >= 0 || pText.indexOf('Remote Updates') >= 0) {
+            // Found git panel - look for scrollable children
+            var scrollables = panels[p].querySelectorAll('*');
+            for (var s = 0; s < scrollables.length; s++) {
+              var sel = scrollables[s];
+              if (sel.scrollHeight > sel.clientHeight + 50) {
+                sel.scrollTop = sel.scrollHeight;
+                scrolled = true;
+                break;
+              }
+            }
             break;
           }
         }
@@ -1036,7 +1127,7 @@ export class ReplitScraper {
     // Save Git tab DOM debug (comprehensive)
     try {
       var gitDebug = await page.evaluate(function() {
-        var panels = document.querySelectorAll('[role="tabpanel"], [class*="git" i], [class*="commit" i], [class*="VersionControl"]');
+        var panels = document.querySelectorAll('[role="tabpanel"]');
         var panelInfo = [];
         for (var pi = 0; pi < panels.length && pi < 10; pi++) {
           var p = panels[pi];
@@ -1049,17 +1140,41 @@ export class ReplitScraper {
             outerHTMLPreview: p.outerHTML.substring(0, 800)
           });
         }
-        var commitEls = document.querySelectorAll('[class*="commit" i]');
+
+        // Find git panel by content and capture commit-bearing elements
+        var gitPanel = null;
+        for (var gp = 0; gp < panels.length; gp++) {
+          var style = window.getComputedStyle(panels[gp]);
+          if (style.opacity === '0' || style.display === 'none') continue;
+          var gpText = (panels[gp].textContent || '').substring(0, 2000);
+          if (gpText.indexOf('Sync Changes') >= 0 || gpText.indexOf('Remote Updates') >= 0) {
+            gitPanel = panels[gp];
+            break;
+          }
+        }
+
         var commitInfo = [];
-        for (var ci = 0; ci < commitEls.length && ci < 15; ci++) {
-          var c = commitEls[ci];
-          commitInfo.push({
-            tag: c.tagName,
-            className: (c.getAttribute('class') || '').substring(0, 300),
-            childCount: c.children.length,
-            textPreview: (c.textContent || '').substring(0, 300),
-            outerHTMLPreview: c.outerHTML.substring(0, 800)
-          });
+        if (gitPanel) {
+          var timePattern = /\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago/i;
+          var absPattern = /\d{1,2}:\d{2}\s*(?:am|pm)/i;
+          var allEls = gitPanel.querySelectorAll('*');
+          for (var ci = 0; ci < allEls.length && commitInfo.length < 15; ci++) {
+            var c = allEls[ci];
+            if (c.children.length > 0) continue;
+            var cText = (c.textContent || '').trim();
+            if (cText.length < 3 || cText.length > 80) continue;
+            if (cText.indexOf('last fetched') >= 0) continue;
+            if (timePattern.test(cText) || absPattern.test(cText)) {
+              var container = c.parentElement;
+              commitInfo.push({
+                tag: c.tagName,
+                className: (c.getAttribute('class') || '').substring(0, 300),
+                timestamp: cText,
+                containerText: container ? (container.textContent || '').trim().substring(0, 300) : '',
+                containerTag: container ? container.tagName : ''
+              });
+            }
+          }
         }
 
         // Also capture list items and scrollable containers (possible commit list containers)
@@ -1097,8 +1212,9 @@ export class ReplitScraper {
         return {
           url: window.location.href,
           panels: panelInfo,
-          commitElements: commitInfo,
-          totalCommitEls: commitEls.length,
+          commitTimestamps: commitInfo,
+          totalCommitTimestamps: commitInfo.length,
+          gitPanelFound: !!gitPanel,
           listItems: listInfo,
           scrollableContainers: scrollable,
           totalListItems: listItems.length
@@ -1107,174 +1223,154 @@ export class ReplitScraper {
       var gitDebugPath = path.join('exports', 'git-tab-debug.json');
       fs.writeFileSync(gitDebugPath, JSON.stringify(gitDebug, null, 2));
       console.log(`  Git tab debug saved: ${gitDebugPath}`);
-      console.log(`  Debug: ${gitDebug.totalCommitEls} commit-class elements, ${gitDebug.totalListItems} list items, ${gitDebug.scrollableContainers.length} scrollable containers`);
+      console.log(`  Debug: ${gitDebug.totalCommitTimestamps} commit timestamps found, git panel: ${gitDebug.gitPanelFound}, ${gitDebug.scrollableContainers.length} scrollable containers`);
     } catch (err) {
       console.log('  Note: Could not save Git tab debug info');
     }
 
-    // Step 2c: Extract commits (read-only, no clicking commit lines)
+    // Step 2c: Extract commits using content-based detection
+    // Replit uses hashed module class names (no "commit" substring), so we find commits
+    // by locating the git panel via content and identifying repeating entry patterns
     var commits: GitCommit[] = await page.evaluate(function() {
       var results = [];
+      var relTimePattern = /\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago/i;
+      var absTimePattern = /\d{1,2}:\d{2}\s*(?:am|pm)/i;
+      var absDatePattern = /(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d{1,2}/i;
+      var justNowPattern = /^just\s+now$/i;
 
-      // Try increasingly broad selectors to find commit elements
-      var commitItems = document.querySelectorAll(
-        '[class*="commit" i] [class*="message" i], ' +
-        '[class*="CommitList"] li, [data-testid*="commit"], ' +
-        '[class*="commit-entry" i], [class*="CommitEntry"]'
-      );
+      // Known non-commit text to skip
+      var skipTexts = [
+        'remote updates', 'sync changes', 'pull', 'push', 'commit',
+        'there are no changes to commit', 'commit & push', 'commit all',
+        'last fetched', 'origin/main', 'upstream', 'main'
+      ];
 
-      if (commitItems.length === 0) {
-        commitItems = document.querySelectorAll('[class*="commit" i]');
-      }
-
-      // Fallback: look for list items that appear to be git commits
-      // Must be inside a git-related ancestor OR contain commit-like metadata (hash, author)
-      if (commitItems.length === 0) {
-        var allLis = document.querySelectorAll('li');
-        var commitLis = [];
-        for (var ali = 0; ali < allLis.length; ali++) {
-          var liEl = allLis[ali];
-          var liText = (liEl.textContent || '').trim();
-          var hasTimestamp = /\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago/i.test(liText) ||
-            /\d{1,2}:\d{2}\s*(?:am|pm)/i.test(liText) ||
-            /(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d{1,2}/i.test(liText);
-          if (!hasTimestamp || liText.length < 10 || liText.length > 2000) continue;
-
-          // Require commit evidence: git-related ancestor, hash pattern, or commit-like keywords
-          var isInGitPanel = false;
-          var ancestor = liEl.parentElement;
-          while (ancestor) {
-            var ancestorCls = (ancestor.getAttribute('class') || '').toLowerCase();
-            if (ancestorCls.indexOf('git') >= 0 || ancestorCls.indexOf('commit') >= 0 ||
-                ancestorCls.indexOf('version') >= 0 || ancestorCls.indexOf('history') >= 0) {
-              isInGitPanel = true;
-              break;
-            }
-            ancestor = ancestor.parentElement;
-          }
-          var hasHash = /\b[0-9a-f]{7,40}\b/.test(liText);
-          var hasCommitKeyword = /(?:saved progress|checkpoint|transitioned|commit)/i.test(liText);
-
-          if (isInGitPanel || hasHash || hasCommitKeyword) {
-            commitLis.push(liEl);
-          }
+      // Step 1: Find the git panel by content (visible [role="tabpanel"] with git keywords)
+      var panels = document.querySelectorAll('[role="tabpanel"]');
+      var gitPanel = null;
+      for (var p = 0; p < panels.length; p++) {
+        var style = window.getComputedStyle(panels[p]);
+        if (style.opacity === '0' || style.display === 'none') continue;
+        var pText = (panels[p].textContent || '').substring(0, 2000);
+        if (pText.indexOf('Sync Changes') >= 0 || pText.indexOf('Remote Updates') >= 0) {
+          gitPanel = panels[p];
+          break;
         }
-        if (commitLis.length > 0) {
-          commitItems = commitLis;
+      }
+      if (!gitPanel) return results;
+
+      // Step 2: Find all leaf-level timestamp elements inside the git panel
+      // Each commit entry has exactly one timestamp element
+      var allEls = gitPanel.querySelectorAll('*');
+      var timestampEls = [];
+      for (var t = 0; t < allEls.length; t++) {
+        var el = allEls[t];
+        if (el.children.length > 0) continue;
+        var txt = (el.textContent || '').trim();
+        if (txt.length < 3 || txt.length > 80) continue;
+        if (txt.indexOf('last fetched') >= 0) continue;
+        if (relTimePattern.test(txt) || absTimePattern.test(txt) ||
+            absDatePattern.test(txt) || justNowPattern.test(txt)) {
+          timestampEls.push(el);
         }
       }
 
-      // Fallback: look for repeating containers inside a git-related ancestor with timestamps
-      if (commitItems.length === 0) {
-        var gitAncestors = document.querySelectorAll(
-          '[class*="git" i], [class*="commit" i], [class*="version" i], ' +
-          '[class*="history" i], [role="tabpanel"]'
-        );
-        for (var gi = 0; gi < gitAncestors.length; gi++) {
-          var gitRoot = gitAncestors[gi];
-          var childDivs = gitRoot.querySelectorAll('div');
-          var candidateDivs = [];
-          for (var di = 0; di < childDivs.length; di++) {
-            var div = childDivs[di];
-            if (div.children.length >= 1 && div.children.length <= 10) {
-              var divText = (div.textContent || '').trim();
-              var hasTs = /\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago/i.test(divText) ||
-                /\d{1,2}:\d{2}\s*(?:am|pm)/i.test(divText);
-              var parent = div.parentElement;
-              if (hasTs && parent && parent.children.length > 3) {
-                candidateDivs.push(div);
-              }
-            }
+      // Step 3: For each timestamp element, walk up to find the commit entry container,
+      // then extract the commit message from that container
+      var seen = {};
+      for (var ti = 0; ti < timestampEls.length; ti++) {
+        var tsEl = timestampEls[ti];
+        var timestamp = (tsEl.textContent || '').trim();
+
+        // Walk up to find the commit entry container:
+        // Look for an ancestor whose parent has multiple similar children (the commit list)
+        var container = tsEl;
+        var commitContainer = null;
+        for (var depth = 0; depth < 8; depth++) {
+          var parent = container.parentElement;
+          if (!parent || parent === gitPanel) break;
+          // A commit list parent typically has several children (the commit entries)
+          if (parent.children.length >= 3) {
+            commitContainer = container;
+            break;
           }
-          if (candidateDivs.length > 2) {
-            commitItems = candidateDivs;
+          container = parent;
+        }
+        if (!commitContainer) {
+          // Fallback: use the timestamp's grandparent or parent
+          commitContainer = tsEl.parentElement;
+          if (commitContainer && commitContainer.parentElement &&
+              commitContainer.parentElement !== gitPanel) {
+            commitContainer = commitContainer.parentElement;
+          }
+        }
+        if (!commitContainer) continue;
+
+        // Step 4: Extract commit message from the container
+        // The message is the longest non-timestamp, non-skip text in the container
+        var containerText = (commitContainer.textContent || '').trim();
+        var message = '';
+
+        // Try to find message by looking at child elements
+        var kids = commitContainer.querySelectorAll('*');
+        var bestMsg = '';
+        var bestLen = 0;
+        for (var k = 0; k < kids.length; k++) {
+          var kid = kids[k];
+          if (kid.children.length > 0) continue;
+          var kidText = (kid.textContent || '').trim();
+          if (kidText.length < 5 || kidText.length > 500) continue;
+          // Skip timestamp text
+          if (relTimePattern.test(kidText) || justNowPattern.test(kidText)) continue;
+          if (/^\d{1,2}:\d{2}\s*(?:am|pm)/i.test(kidText)) continue;
+          if (/^(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d{1,2},?\s+\d{4}/i.test(kidText)) continue;
+          // Skip short author initials (1-3 chars) and known skip texts
+          if (kidText.length <= 3) continue;
+          var kidLower = kidText.toLowerCase();
+          var isSkip = false;
+          for (var si = 0; si < skipTexts.length; si++) {
+            if (kidLower === skipTexts[si]) { isSkip = true; break; }
+          }
+          if (isSkip) continue;
+          // Prefer the longest descriptive text as the commit message
+          if (kidText.length > bestLen) {
+            bestMsg = kidText;
+            bestLen = kidText.length;
+          }
+        }
+        message = bestMsg;
+
+        // Fallback: parse container text line by line
+        if (!message) {
+          var lines = containerText.split('\n');
+          for (var ln = 0; ln < lines.length; ln++) {
+            var line = lines[ln].trim();
+            if (line.length < 5 || line.length > 500) continue;
+            if (relTimePattern.test(line) || justNowPattern.test(line)) continue;
+            if (/^\d{1,2}:\d{2}\s*(?:am|pm)/i.test(line)) continue;
+            var lineLower = line.toLowerCase();
+            var lineSkip = false;
+            for (var ls = 0; ls < skipTexts.length; ls++) {
+              if (lineLower === skipTexts[ls]) { lineSkip = true; break; }
+            }
+            if (lineSkip) continue;
+            if (line.length <= 3) continue;
+            message = line;
             break;
           }
         }
-      }
 
-      var seen = {};
-
-      for (var i = 0; i < commitItems.length; i++) {
-        var el = commitItems[i];
-
-        var msgEl = el.querySelector(
-          '[class*="message" i], [class*="description" i], ' +
-          '[class*="summary" i], [class*="title" i]'
-        );
-        var message = '';
-        if (msgEl) {
-          message = (msgEl.textContent || '').trim();
-        }
-        if (!message) {
-          var children = el.children;
-          for (var c = 0; c < children.length; c++) {
-            var childText = (children[c].textContent || '').trim();
-            if (childText.length > 5 && childText.length < 500) {
-              var isTimeOnly = /^\d{1,2}:\d{2}\s*(?:am|pm)/i.test(childText) ||
-                /^\w+\s+\d{1,2},?\s+\d{4}/i.test(childText) ||
-                /^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i.test(childText);
-              if (!isTimeOnly) {
-                message = childText;
-                break;
-              }
-            }
-          }
-        }
-        if (!message) {
-          var fullText = (el.textContent || '').trim();
-          var lines = fullText.split('\n');
-          for (var li = 0; li < lines.length; li++) {
-            var line = lines[li].trim();
-            if (line.length > 5 && line.length < 500) {
-              var isTimeOnlyLine = /^\d{1,2}:\d{2}\s*(?:am|pm)/i.test(line) ||
-                /^\w+\s+\d{1,2},?\s+\d{4}/i.test(line) ||
-                /^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i.test(line);
-              if (!isTimeOnlyLine) {
-                message = line;
-                break;
-              }
-            }
-          }
-        }
         if (!message) continue;
 
-        var timestamp = null;
-
-        var timeEl = el.querySelector('time, [class*="time" i], [class*="date" i], [class*="ago" i]');
-        if (timeEl) {
-          var timeText = (timeEl.textContent || '').trim();
-          var dtAttr = timeEl.getAttribute('datetime') || '';
-          if (dtAttr) {
-            timestamp = dtAttr;
-          } else if (timeText && timeText.length > 0 && timeText.length < 100) {
-            timestamp = timeText;
-          }
-        }
-
-        if (!timestamp) {
-          var allText = (el.textContent || '');
-          var absMatch = allText.match(/(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})/i);
-          if (absMatch) {
-            timestamp = absMatch[1].trim();
-          }
-        }
-
-        if (!timestamp) {
-          var allText2 = (el.textContent || '');
-          var relMatch = allText2.match(/(\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago)/i);
-          if (relMatch) {
-            timestamp = relMatch[1].trim();
-          }
-        }
-
-        var hashEl = el.querySelector(
+        // Step 5: Extract hash if present
+        var hashEl = commitContainer.querySelector(
           '[class*="hash" i], [class*="sha" i], code, [class*="commit-id" i]'
         );
         var hash = hashEl ? (hashEl.textContent || '').trim() : null;
         if (hash && hash.length > 40) hash = null;
 
-        var key = message + '|' + (timestamp || '');
+        // Deduplicate by message+timestamp
+        var key = message + '|' + timestamp;
         if (seen[key]) continue;
         seen[key] = true;
 
@@ -1292,48 +1388,32 @@ export class ReplitScraper {
 
   private async verifyGitPanelOpen(page: Page): Promise<boolean> {
     return await page.evaluate(function() {
-      // Check for commit-related DOM content that would indicate the Git panel is open
-      // 1. Look for elements with "commit" in their class/testid
+      // Content-based detection: find a visible [role="tabpanel"] whose text
+      // contains distinctive git-panel keywords (works regardless of hashed class names)
+      var panels = document.querySelectorAll('[role="tabpanel"]');
+      for (var i = 0; i < panels.length; i++) {
+        var panel = panels[i];
+        var style = window.getComputedStyle(panel);
+        if (style.opacity === '0' || style.display === 'none') continue;
+        var text = (panel.textContent || '').substring(0, 2000);
+        var hasSyncChanges = text.indexOf('Sync Changes') >= 0;
+        var hasRemoteUpdates = text.indexOf('Remote Updates') >= 0;
+        var hasPullPush = text.indexOf('Pull') >= 0 && text.indexOf('Push') >= 0;
+        var hasCommitText = text.indexOf('no changes to commit') >= 0 ||
+          text.indexOf('Commit & push') >= 0 || text.indexOf('Commit all') >= 0;
+        if (hasSyncChanges || hasRemoteUpdates || (hasPullPush && hasCommitText)) {
+          return true;
+        }
+      }
+
+      // Fallback: class-name-based detection for older UI versions
       var commitEls = document.querySelectorAll(
         '[class*="commit" i], [data-testid*="commit"], ' +
-        '[class*="CommitList"], [class*="CommitEntry"]'
+        '[class*="CommitList"], [class*="CommitEntry"], ' +
+        '[class*="VersionControl" i], [class*="git-panel" i], ' +
+        '[class*="GitPanel"], [class*="git-pane" i]'
       );
       if (commitEls.length > 0) return true;
-
-      // 2. Look for version control / git panel identifiers
-      var gitPanels = document.querySelectorAll(
-        '[class*="VersionControl" i], [class*="git-panel" i], ' +
-        '[class*="GitPanel"], [class*="git-pane" i], [class*="GitPane"], ' +
-        '[data-testid*="git-panel"], [data-testid*="version-control"]'
-      );
-      if (gitPanels.length > 0) return true;
-
-      // 3. Check visible text for commit-related content
-      // Look for "Commit & push", "Commit all", or "commit history"
-      var buttons = document.querySelectorAll('button');
-      for (var i = 0; i < buttons.length; i++) {
-        var text = (buttons[i].textContent || '').trim().toLowerCase();
-        if (text.indexOf('commit') >= 0 && (text.indexOf('push') >= 0 || text.indexOf('all') >= 0)) {
-          return true;
-        }
-      }
-
-      // 4. Look for common Git UI elements: branch names, commit hashes, file diffs
-      var branchEls = document.querySelectorAll(
-        '[class*="branch" i], [class*="Branch"], ' +
-        '[class*="diff" i], [class*="Diff"]'
-      );
-      if (branchEls.length > 2) return true;
-
-      // 5. Check for "Changes" or "Commits" tabs within the panel
-      var subTabs = document.querySelectorAll('[role="tab"], button, a');
-      for (var j = 0; j < subTabs.length; j++) {
-        var subText = (subTabs[j].textContent || '').trim().toLowerCase();
-        if (subText === 'commits' || subText === 'changes' || subText === 'commit history') {
-          // Found a sub-tab, likely in Git panel
-          return true;
-        }
-      }
 
       return false;
     });
@@ -1439,120 +1519,51 @@ export class ReplitScraper {
   }
 
   private async clickOneRelativeTimestamp(page: Page): Promise<boolean> {
-    // Commit-entry-based detection: find a commit descriptor element, then check
-    // the adjacent timestamp line below it to determine if it's relative or absolute.
-    // If already absolute, no click needed. If relative, click to convert all.
+    // Content-based detection: find timestamp elements inside the git panel,
+    // check if they're relative or absolute. If relative, click to convert all.
     var detection = await page.evaluate(function() {
       var relativePattern = /^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i;
       var justNowPattern = /^just\s+now$/i;
-      // Absolute patterns: time-of-day ("3:45 PM"), date ("Jan 2, 2024"), or combined
       var absoluteTimePattern = /\d{1,2}:\d{2}\s*(?:am|pm)/i;
       var absoluteDatePattern = /(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d{1,2},?\s+\d{4}/i;
       var absoluteNumericDatePattern = /\d{1,2}\/\d{1,2}\/\d{2,4}/;
 
-      // Step 1: Find commit container elements (not message sub-elements)
-      // Use container-level selectors first
-      var commitContainers = document.querySelectorAll(
-        '[class*="CommitList"] li, [data-testid*="commit"], ' +
-        '[class*="commit-entry" i], [class*="CommitEntry"]'
-      );
+      // Find the git panel by content
+      var panels = document.querySelectorAll('[role="tabpanel"]');
+      var gitPanel = null;
+      for (var p = 0; p < panels.length; p++) {
+        var style = window.getComputedStyle(panels[p]);
+        if (style.opacity === '0' || style.display === 'none') continue;
+        var pText = (panels[p].textContent || '').substring(0, 2000);
+        if (pText.indexOf('Sync Changes') >= 0 || pText.indexOf('Remote Updates') >= 0) {
+          gitPanel = panels[p];
+          break;
+        }
+      }
+      if (!gitPanel) return { status: 'none', text: '', elIndex: -1 };
 
-      // If no container-level matches, try broader commit class and resolve upward
-      if (commitContainers.length === 0) {
-        var msgEls = document.querySelectorAll('[class*="commit" i] [class*="message" i]');
-        var containers = [];
-        var seenContainers = {};
-        for (var m = 0; m < msgEls.length; m++) {
-          var parent = msgEls[m];
-          while (parent) {
-            var cls = (parent.getAttribute('class') || '').toLowerCase();
-            if (cls.indexOf('commit') >= 0 && parent !== msgEls[m]) {
-              var key = parent.tagName + '_' + (parent.getAttribute('class') || '').substring(0, 50);
-              if (!seenContainers[key]) {
-                seenContainers[key] = true;
-                containers.push(parent);
-              }
-              break;
-            }
-            parent = parent.parentElement;
-          }
+      // Find leaf-level timestamp elements (excluding "last fetched")
+      var allEls = gitPanel.querySelectorAll('*');
+      for (var i = 0; i < allEls.length; i++) {
+        var el = allEls[i];
+        if (el.children.length > 0) continue;
+        var txt = (el.textContent || '').trim();
+        if (txt.length < 3 || txt.length > 80) continue;
+        if (txt.indexOf('last fetched') >= 0) continue;
+
+        if (relativePattern.test(txt) || justNowPattern.test(txt)) {
+          return { status: 'relative', text: txt, elIndex: i };
         }
-        if (containers.length === 0) {
-          var allCommit = document.querySelectorAll('[class*="commit" i]');
-          for (var ac = 0; ac < allCommit.length; ac++) {
-            containers.push(allCommit[ac]);
-          }
+        if (absoluteTimePattern.test(txt) || absoluteDatePattern.test(txt) || absoluteNumericDatePattern.test(txt)) {
+          return { status: 'absolute', text: txt, elIndex: i };
         }
-        commitContainers = containers;
       }
 
-      // Step 2: Scan each commit container for description + timestamp
-      for (var i = 0; i < commitContainers.length; i++) {
-        var commitEl = commitContainers[i];
-
-        var hasDescription = false;
-        var msgEl = commitEl.querySelector(
-          '[class*="message" i], [class*="description" i], ' +
-          '[class*="summary" i], [class*="title" i]'
-        );
-        if (msgEl && (msgEl.textContent || '').trim().length > 5) {
-          hasDescription = true;
-        }
-        if (!hasDescription) {
-          var children = commitEl.children;
-          for (var c = 0; c < children.length; c++) {
-            var childText = (children[c].textContent || '').trim();
-            if (childText.length > 5 && childText.length < 500 &&
-                !(relativePattern.test(childText) || justNowPattern.test(childText)) &&
-                !(absoluteTimePattern.test(childText) || absoluteDatePattern.test(childText) || absoluteNumericDatePattern.test(childText))) {
-              hasDescription = true;
-              break;
-            }
-          }
-        }
-        if (!hasDescription) continue;
-
-        // Look for the timestamp line within this commit container
-        var timeEl = commitEl.querySelector('time, [class*="time" i], [class*="date" i], [class*="ago" i], [class*="Timestamp"]');
-        if (!timeEl) {
-          // Also check sibling/next elements of the commit container
-          var nextSib = commitEl.nextElementSibling;
-          if (nextSib) {
-            var sibText = (nextSib.textContent || '').trim();
-            if (relativePattern.test(sibText) || justNowPattern.test(sibText)) {
-              return { status: 'relative', text: sibText, index: i, useSibling: true };
-            }
-            if (absoluteTimePattern.test(sibText) || absoluteDatePattern.test(sibText) || absoluteNumericDatePattern.test(sibText)) {
-              return { status: 'absolute', text: sibText, index: i, useSibling: false };
-            }
-          }
-          continue;
-        }
-
-        var timeText = (timeEl.textContent || '').trim();
-
-        // Classify the timestamp line
-        if (relativePattern.test(timeText) || justNowPattern.test(timeText)) {
-          return { status: 'relative', text: timeText, index: i, useSibling: false };
-        }
-        if (absoluteTimePattern.test(timeText) || absoluteDatePattern.test(timeText) || absoluteNumericDatePattern.test(timeText)) {
-          return { status: 'absolute', text: timeText, index: i, useSibling: false };
-        }
-
-        // Check datetime attribute as fallback for absolute
-        var dtAttr = timeEl.getAttribute('datetime') || '';
-        if (dtAttr) {
-          return { status: 'absolute', text: dtAttr, index: i, useSibling: false };
-        }
-
-        // Neither relative nor absolute — keep scanning next commit
-      }
-
-      return { status: 'none', text: '', index: -1, useSibling: false };
+      return { status: 'none', text: '', elIndex: -1 };
     });
 
     if (detection.status === 'absolute') {
-      console.log(`  Timestamps already absolute ("${detection.text}" at commit ${detection.index}). No click needed.`);
+      console.log(`  Timestamps already absolute ("${detection.text}"). No click needed.`);
       return true;
     }
 
@@ -1562,63 +1573,32 @@ export class ReplitScraper {
     }
 
     // Status is 'relative' — click it to convert all timestamps
-    console.log(`  Found relative timestamp "${detection.text}" at commit ${detection.index}. Clicking to convert...`);
+    console.log(`  Found relative timestamp "${detection.text}". Clicking to convert...`);
 
-    var clicked = await page.evaluate(function(args) {
-      var targetIndex = args.targetIndex;
-      var useSibling = args.useSibling;
-
-      var commitContainers = document.querySelectorAll(
-        '[class*="CommitList"] li, [data-testid*="commit"], ' +
-        '[class*="commit-entry" i], [class*="CommitEntry"]'
-      );
-      var containers = [];
-      if (commitContainers.length === 0) {
-        var msgEls = document.querySelectorAll('[class*="commit" i] [class*="message" i]');
-        var seenC = {};
-        for (var m = 0; m < msgEls.length; m++) {
-          var p = msgEls[m];
-          while (p) {
-            var cls = (p.getAttribute('class') || '').toLowerCase();
-            if (cls.indexOf('commit') >= 0 && p !== msgEls[m]) {
-              var k = p.tagName + '_' + (p.getAttribute('class') || '').substring(0, 50);
-              if (!seenC[k]) { seenC[k] = true; containers.push(p); }
-              break;
-            }
-            p = p.parentElement;
-          }
-        }
-        if (containers.length === 0) {
-          var allC = document.querySelectorAll('[class*="commit" i]');
-          for (var ac = 0; ac < allC.length; ac++) containers.push(allC[ac]);
-        }
-      } else {
-        for (var i = 0; i < commitContainers.length; i++) containers.push(commitContainers[i]);
-      }
-
-      if (targetIndex < 0 || targetIndex >= containers.length) return null;
-      var commitEl = containers[targetIndex];
-
-      if (useSibling) {
-        var sib = commitEl.nextElementSibling;
-        if (sib) {
-          sib.scrollIntoView({ block: 'center', behavior: 'instant' });
-          sib.click();
-          return 'clicked-sibling';
+    var clicked = await page.evaluate(function(targetElIndex) {
+      // Re-find the git panel and its elements
+      var panels = document.querySelectorAll('[role="tabpanel"]');
+      var gitPanel = null;
+      for (var p = 0; p < panels.length; p++) {
+        var style = window.getComputedStyle(panels[p]);
+        if (style.opacity === '0' || style.display === 'none') continue;
+        var pText = (panels[p].textContent || '').substring(0, 2000);
+        if (pText.indexOf('Sync Changes') >= 0 || pText.indexOf('Remote Updates') >= 0) {
+          gitPanel = panels[p];
+          break;
         }
       }
+      if (!gitPanel) return null;
 
-      var timeEl = commitEl.querySelector('time, [class*="time" i], [class*="date" i], [class*="ago" i], [class*="Timestamp"]');
-      if (timeEl) {
-        timeEl.scrollIntoView({ block: 'center', behavior: 'instant' });
-        timeEl.click();
-        return 'clicked-time';
+      var allEls = gitPanel.querySelectorAll('*');
+      if (targetElIndex >= 0 && targetElIndex < allEls.length) {
+        var el = allEls[targetElIndex];
+        el.scrollIntoView({ block: 'center', behavior: 'instant' });
+        el.click();
+        return 'clicked-timestamp';
       }
-
-      commitEl.scrollIntoView({ block: 'center', behavior: 'instant' });
-      commitEl.click();
-      return 'clicked-container';
-    }, { targetIndex: detection.index, useSibling: detection.useSibling });
+      return null;
+    }, detection.elIndex);
 
     if (!clicked) {
       console.log('  Could not click the relative timestamp element.');
@@ -1628,150 +1608,101 @@ export class ReplitScraper {
     console.log(`  Click executed (${clicked}). Waiting for conversion...`);
     await page.waitForTimeout(1500);
 
-    // Verify: re-check the same commit entry's timestamp line
-    var verified = await page.evaluate(function(targetIndex) {
-      var relativePattern = /^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i;
-      var justNowPattern = /^just\s+now$/i;
+    // Verify: re-check timestamps in the git panel
+    var verified = await page.evaluate(function() {
       var absoluteTimePattern = /\d{1,2}:\d{2}\s*(?:am|pm)/i;
       var absoluteDatePattern = /(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d{1,2},?\s+\d{4}/i;
       var absoluteNumericDatePattern = /\d{1,2}\/\d{1,2}\/\d{2,4}/;
+      var relativePattern = /^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i;
 
-      var commitContainers = document.querySelectorAll(
-        '[class*="CommitList"] li, [data-testid*="commit"], ' +
-        '[class*="commit-entry" i], [class*="CommitEntry"]'
-      );
-      var containers = [];
-      if (commitContainers.length === 0) {
-        var msgEls = document.querySelectorAll('[class*="commit" i] [class*="message" i]');
-        var seenC = {};
-        for (var m = 0; m < msgEls.length; m++) {
-          var p = msgEls[m];
-          while (p) {
-            var cls = (p.getAttribute('class') || '').toLowerCase();
-            if (cls.indexOf('commit') >= 0 && p !== msgEls[m]) {
-              var k = p.tagName + '_' + (p.getAttribute('class') || '').substring(0, 50);
-              if (!seenC[k]) { seenC[k] = true; containers.push(p); }
-              break;
-            }
-            p = p.parentElement;
-          }
+      var panels = document.querySelectorAll('[role="tabpanel"]');
+      var gitPanel = null;
+      for (var p = 0; p < panels.length; p++) {
+        var style = window.getComputedStyle(panels[p]);
+        if (style.opacity === '0' || style.display === 'none') continue;
+        var pText = (panels[p].textContent || '').substring(0, 2000);
+        if (pText.indexOf('Sync Changes') >= 0 || pText.indexOf('Remote Updates') >= 0) {
+          gitPanel = panels[p];
+          break;
         }
-        if (containers.length === 0) {
-          var allC = document.querySelectorAll('[class*="commit" i]');
-          for (var ac = 0; ac < allC.length; ac++) containers.push(allC[ac]);
-        }
-      } else {
-        for (var i = 0; i < commitContainers.length; i++) containers.push(commitContainers[i]);
       }
+      if (!gitPanel) return { converted: false, text: '' };
 
-      if (targetIndex >= 0 && targetIndex < containers.length) {
-        var commitEl = containers[targetIndex];
-        var timeEl = commitEl.querySelector('time, [class*="time" i], [class*="date" i], [class*="ago" i], [class*="Timestamp"]');
-        if (timeEl) {
-          var text = (timeEl.textContent || '').trim();
-          if (absoluteTimePattern.test(text) || absoluteDatePattern.test(text) || absoluteNumericDatePattern.test(text)) {
-            return { converted: true, text: text };
-          }
-          if (relativePattern.test(text) || justNowPattern.test(text)) {
-            return { converted: false, text: text };
-          }
-          var dtAttr = timeEl.getAttribute('datetime') || '';
-          if (dtAttr) {
-            return { converted: true, text: dtAttr };
-          }
+      var allEls = gitPanel.querySelectorAll('*');
+      for (var i = 0; i < allEls.length; i++) {
+        var el = allEls[i];
+        if (el.children.length > 0) continue;
+        var txt = (el.textContent || '').trim();
+        if (txt.length < 3 || txt.length > 80) continue;
+        if (txt.indexOf('last fetched') >= 0) continue;
+        if (absoluteTimePattern.test(txt) || absoluteDatePattern.test(txt) || absoluteNumericDatePattern.test(txt)) {
+          return { converted: true, text: txt };
         }
-        var nextSib = commitEl.nextElementSibling;
-        if (nextSib) {
-          var sibText = (nextSib.textContent || '').trim();
-          if (absoluteTimePattern.test(sibText) || absoluteDatePattern.test(sibText) || absoluteNumericDatePattern.test(sibText)) {
-            return { converted: true, text: sibText };
-          }
+        if (relativePattern.test(txt)) {
+          return { converted: false, text: txt };
         }
       }
       return { converted: false, text: '' };
-    }, detection.index);
+    });
 
     if (verified.converted) {
       console.log(`  Conversion verified: "${verified.text}"`);
       return true;
     }
 
-    // Retry: try clicking the parent element of the timestamp
+    // Retry: try clicking the parent of the timestamp element
     console.log(`  Conversion not confirmed ("${verified.text}"). Retrying with parent click...`);
-    var retryClicked = await page.evaluate(function(targetIndex) {
-      var commitContainers = document.querySelectorAll(
-        '[class*="CommitList"] li, [data-testid*="commit"], ' +
-        '[class*="commit-entry" i], [class*="CommitEntry"]'
-      );
-      var containers = [];
-      if (commitContainers.length === 0) {
-        var msgEls = document.querySelectorAll('[class*="commit" i] [class*="message" i]');
-        var seenC = {};
-        for (var m = 0; m < msgEls.length; m++) {
-          var p = msgEls[m];
-          while (p) {
-            var cls = (p.getAttribute('class') || '').toLowerCase();
-            if (cls.indexOf('commit') >= 0 && p !== msgEls[m]) {
-              var k = p.tagName + '_' + (p.getAttribute('class') || '').substring(0, 50);
-              if (!seenC[k]) { seenC[k] = true; containers.push(p); }
-              break;
-            }
-            p = p.parentElement;
-          }
+    var retryClicked = await page.evaluate(function(targetElIndex) {
+      var panels = document.querySelectorAll('[role="tabpanel"]');
+      var gitPanel = null;
+      for (var p = 0; p < panels.length; p++) {
+        var style = window.getComputedStyle(panels[p]);
+        if (style.opacity === '0' || style.display === 'none') continue;
+        var pText = (panels[p].textContent || '').substring(0, 2000);
+        if (pText.indexOf('Sync Changes') >= 0 || pText.indexOf('Remote Updates') >= 0) {
+          gitPanel = panels[p];
+          break;
         }
-        if (containers.length === 0) {
-          var allC = document.querySelectorAll('[class*="commit" i]');
-          for (var ac = 0; ac < allC.length; ac++) containers.push(allC[ac]);
-        }
-      } else {
-        for (var i = 0; i < commitContainers.length; i++) containers.push(commitContainers[i]);
       }
+      if (!gitPanel) return false;
 
-      if (targetIndex >= 0 && targetIndex < containers.length) {
-        var commitEl = containers[targetIndex];
-        var timeEl = commitEl.querySelector('time, [class*="time" i], [class*="date" i], [class*="ago" i], [class*="Timestamp"]');
-        if (timeEl && timeEl.parentElement) {
-          timeEl.parentElement.scrollIntoView({ block: 'center', behavior: 'instant' });
-          timeEl.parentElement.click();
+      var allEls = gitPanel.querySelectorAll('*');
+      if (targetElIndex >= 0 && targetElIndex < allEls.length) {
+        var el = allEls[targetElIndex];
+        if (el.parentElement) {
+          el.parentElement.scrollIntoView({ block: 'center', behavior: 'instant' });
+          el.parentElement.click();
           return true;
         }
       }
       return false;
-    }, detection.index);
+    }, detection.elIndex);
 
     if (retryClicked) {
       await page.waitForTimeout(1500);
 
-      // Final verification
-      var finalCheck = await page.evaluate(function(targetIndex) {
+      var finalCheck = await page.evaluate(function() {
         var absoluteTimePattern = /\d{1,2}:\d{2}\s*(?:am|pm)/i;
         var absoluteDatePattern = /(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d{1,2},?\s+\d{4}/i;
-        var absoluteNumericDatePattern = /\d{1,2}\/\d{1,2}\/\d{2,4}/;
 
-        var commitContainers = document.querySelectorAll(
-          '[class*="CommitList"] li, [data-testid*="commit"], ' +
-          '[class*="commit-entry" i], [class*="CommitEntry"]'
-        );
-        var containers = [];
-        if (commitContainers.length === 0) {
-          var allC = document.querySelectorAll('[class*="commit" i]');
-          for (var ac = 0; ac < allC.length; ac++) containers.push(allC[ac]);
-        } else {
-          for (var i = 0; i < commitContainers.length; i++) containers.push(commitContainers[i]);
-        }
-
-        if (targetIndex >= 0 && targetIndex < containers.length) {
-          var commitEl = containers[targetIndex];
-          var timeEl = commitEl.querySelector('time, [class*="time" i], [class*="date" i], [class*="ago" i], [class*="Timestamp"]');
-          if (timeEl) {
-            var text = (timeEl.textContent || '').trim();
-            if (absoluteTimePattern.test(text) || absoluteDatePattern.test(text) || absoluteNumericDatePattern.test(text)) return true;
-            var dtAttr = timeEl.getAttribute('datetime') || '';
-            if (dtAttr) return true;
+        var panels = document.querySelectorAll('[role="tabpanel"]');
+        for (var p = 0; p < panels.length; p++) {
+          var style = window.getComputedStyle(panels[p]);
+          if (style.opacity === '0' || style.display === 'none') continue;
+          var pText = (panels[p].textContent || '').substring(0, 2000);
+          if (pText.indexOf('Sync Changes') >= 0 || pText.indexOf('Remote Updates') >= 0) {
+            var allEls = panels[p].querySelectorAll('*');
+            for (var i = 0; i < allEls.length; i++) {
+              var el = allEls[i];
+              if (el.children.length > 0) continue;
+              var txt = (el.textContent || '').trim();
+              if (txt.indexOf('last fetched') >= 0) continue;
+              if (absoluteTimePattern.test(txt) || absoluteDatePattern.test(txt)) return true;
+            }
           }
         }
         return false;
-      }, detection.index);
+      });
 
       if (finalCheck) {
         console.log('  Conversion verified on retry.');
