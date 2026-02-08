@@ -310,11 +310,8 @@ export class ReplitScraper {
     await this.waitForAgentIdle(page);
 
     // === STEP 1: Load full chat history and expand sections ===
-    const chatContainer = await this.findChatContainer(page);
-    console.log(`Chat container found: ${chatContainer || 'none (will use fallback scrolling)'}`);
-    
     console.log('Step 1: Scrolling to load full chat history...');
-    await this.scrollToLoadAll(page, chatContainer);
+    await this.scrollToLoadAll(page);
 
     console.log('Step 1b: Expanding targeted sections (messages & actions, checkpoints, worked for)...');
     var expandedCount = await this.expandTargetedSections(page);
@@ -2364,29 +2361,6 @@ export class ReplitScraper {
     }, { idx: index, prevTs: lastTimestamp });
   }
 
-  private async findChatContainer(page: Page): Promise<string | null> {
-    const containerSelectors = [
-      '[data-testid="agent-chat-container"]',
-      '[data-testid="chat-container"]',
-      '[data-cy="agent-messages"]',
-      '[class*="ChatHistory"]',
-      '[class*="chat-history"]',
-      '[class*="MessageList"]',
-      '[class*="message-list"]',
-      '[role="log"]',
-      '[class*="ScrollArea"]',
-    ];
-
-    for (const selector of containerSelectors) {
-      const exists = await page.$(selector);
-      if (exists) {
-        return selector;
-      }
-    }
-
-    return null;
-  }
-
   private async countMessageElements(page: Page): Promise<number> {
     return page.evaluate(function() {
       var selectors = [
@@ -2406,7 +2380,7 @@ export class ReplitScraper {
     });
   }
 
-  private async scrollToLoadAll(page: Page, containerSelector: string | null): Promise<void> {
+  private async scrollToLoadAll(page: Page): Promise<void> {
     let previousCount = 0;
     let sameCountIterations = 0;
     let loadMoreFailedClicks = 0;
@@ -2422,18 +2396,12 @@ export class ReplitScraper {
       }
       const currentCount = await this.countMessageElements(page);
 
-      await page.evaluate(function(selector) {
-        if (selector) {
-          var container = document.querySelector(selector);
-          if (container) {
-            container.scrollTop = 0;
-          }
-        }
+      await page.evaluate(function() {
         var scrollAreas = document.querySelectorAll('[class*="ScrollArea"], [class*="scroll"], [role="log"]');
         for (var j = 0; j < scrollAreas.length; j++) {
           scrollAreas[j].scrollTop = 0;
         }
-      }, containerSelector);
+      });
 
       await page.waitForTimeout(500);
 
