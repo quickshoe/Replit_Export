@@ -78,6 +78,18 @@ npx tsx exporter/index.ts --clear-session
 
 ## Recent Changes
 
+- 2026-02-08: Robust Agent Usage expand, timestamp priority, and newline preservation:
+  - Rewrote Agent Usage expand logic: finds "Agent Usage" text nodes first, then walks up ancestors, siblings, and children to find the nearest clickable expand button/chevron
+  - Phase 1 (general expand) now skips elements containing "Agent Usage" to avoid premature clicks before parent sections are expanded
+  - Phase 1 increased to 10 max rounds for deeply nested content
+  - Added Strategy B for Agent Usage: also scans all buttons/expandables inside EndOfRunSummary containers
+  - Timestamp toggle now runs multiple rounds (3) to catch newly revealed timestamps from expanded sections
+  - Timestamp toggle also handles elements with aria-checked=null (not just "false")
+  - Timestamp extraction now strongly prefers absolute timestamps over relative ("X ago") — relative timestamps are only used as a last resort when no absolute timestamp is available anywhere
+  - Both primary and fallback timestamp maps updated with relative-vs-absolute priority
+  - Chat message content now uses innerText instead of textContent to preserve line breaks and paragraph formatting
+  - Fallback message extraction also preserves newlines via innerText
+  - Fixed welcome box top/bottom border off-by-one (was 1 character too wide)
 - 2026-02-08: CSV header and terminal box rendering improvements:
   - All CSV headers now use readable labels: "Repl name", "Timestamp", "Event type", "Message type", "Content", etc.
   - work-tracking.csv headers match Replit chat text: "Time worked", "Work done (actions)", "Items read (lines)", "Code added", "Code removed", "Agent usage fee"

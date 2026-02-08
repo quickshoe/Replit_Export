@@ -290,42 +290,33 @@ export class ReplitScraper {
   private async expandAllCollapsedSections(page: Page): Promise<void> {
     // STRATEGY: Every element we click gets marked with data-exporter-clicked="1"
     // so subsequent passes NEVER re-click (and accidentally collapse) an element.
+    // All phases process elements in DOM order (top-to-bottom) so parent sections
+    // expand before their nested children (e.g. "Worked for" before "Agent Usage").
 
     // Phase 1: General expandable sections (ExpandableFeedContent, expandableButton, etc.)
     var expandedCount = 0;
-    var maxRounds = 5;
+    var maxRounds = 10;
 
     for (var round = 0; round < maxRounds; round++) {
       var buttonsClicked = await page.evaluate(function() {
         var clicked = 0;
-        var expandButtons = document.querySelectorAll('[class*="ExpandableFeedContent"], [class*="expandableButton"]');
-        for (var i = 0; i < expandButtons.length; i++) {
-          var btn = expandButtons[i];
+        var allCandidates = document.querySelectorAll(
+          '[class*="ExpandableFeedContent"], [class*="expandableButton"], ' +
+          'button[class*="expandable"], button[class*="Expandable"], ' +
+          '[class*="expandable"][role="button"], [class*="Expandable"][role="button"]'
+        );
+        for (var i = 0; i < allCandidates.length; i++) {
+          var btn = allCandidates[i];
           if (btn.getAttribute('data-exporter-clicked') === '1') continue;
           var ariaExpanded = btn.getAttribute('aria-expanded');
           if (ariaExpanded === 'true') continue;
+          var text = (btn.textContent || '').trim();
+          if (text.indexOf('Agent Usage') >= 0) continue;
           var rect = btn.getBoundingClientRect();
           if (rect.width > 0 && rect.height > 0) {
             btn.setAttribute('data-exporter-clicked', '1');
             if (btn['click']) btn['click']();
             clicked++;
-          }
-        }
-
-        var allButtons = document.querySelectorAll('button');
-        for (var j = 0; j < allButtons.length; j++) {
-          var b = allButtons[j];
-          if (b.getAttribute('data-exporter-clicked') === '1') continue;
-          var cls = b.getAttribute('class') || '';
-          if (cls.indexOf('expandable') >= 0 || cls.indexOf('Expandable') >= 0) {
-            var bExpanded = b.getAttribute('aria-expanded');
-            if (bExpanded === 'true') continue;
-            var bRect = b.getBoundingClientRect();
-            if (bRect.width > 0 && bRect.height > 0) {
-              b.setAttribute('data-exporter-clicked', '1');
-              if (b['click']) b['click']();
-              clicked++;
-            }
           }
         }
         return clicked;
@@ -346,38 +337,117 @@ export class ReplitScraper {
 
     await page.waitForTimeout(1000);
 
-    // Phase 2: Agent Usage chevrons inside EndOfRunSummary
+    // Phase 2: Agent Usage expand buttons
+    // The "Agent Usage" line has: label text, then an expand chevron button, then the dollar amount.
+    // We need to find the expand button NEAR the "Agent Usage" text — it could be a sibling,
+    // a child of the same parent, or the closest ancestor button/expandable.
     console.log('  Expanding Agent Usage chevrons...');
     var agentUsageExpanded = 0;
-    for (var auRound = 0; auRound < 3; auRound++) {
+    for (var auRound = 0; auRound < 5; auRound++) {
       var auClicked = await page.evaluate(function() {
         var clicked = 0;
 
-        var allEls = document.querySelectorAll('button, [role="button"], div[class*="expandable"], div[class*="Expandable"], summary, details');
+        // Strategy A: Walk all elements looking for ones containing "Agent Usage" text
+        // then find the nearest clickable expand trigger
+        var allEls = document.querySelectorAll('*');
+        var agentUsageNodes = [] as any[];
         for (var i = 0; i < allEls.length; i++) {
           var el = allEls[i];
-          if (el.getAttribute('data-exporter-clicked') === '1') continue;
-          var text = (el.textContent || '').trim();
-          if (text.indexOf('Agent Usage') >= 0 && text.length < 100) {
-            var ariaExp = el.getAttribute('aria-expanded');
-            if (ariaExp === 'true') continue;
-            var rect = el.getBoundingClientRect();
-            if (rect.width > 0 && rect.height > 0) {
-              el.setAttribute('data-exporter-clicked', '1');
-              if (el['click']) el['click']();
+          if (el.children.length > 5) continue;
+          var elText = (el.textContent || '').trim();
+          if (elText.indexOf('Agent Usage') < 0) continue;
+          if (elText.length > 200) continue;
+          if (el.getAttribute('data-exporter-au-found') === '1') continue;
+          agentUsageNodes.push(el);
+        }
+
+        for (var ni = 0; ni < agentUsageNodes.length; ni++) {
+          var node = agentUsageNodes[ni];
+          node.setAttribute('data-exporter-au-found', '1');
+
+          // Walk up ancestors to find a clickable expand element
+          var candidate = null as any;
+          var walker = node;
+          for (var up = 0; up < 8; up++) {
+            if (!walker) break;
+            var tag = walker.tagName ? walker.tagName.toLowerCase() : '';
+            var role = walker.getAttribute ? (walker.getAttribute('role') || '') : '';
+            var cls = walker.getAttribute ? (walker.getAttribute('class') || '') : '';
+            var isClickable = (tag === 'button' || tag === 'summary' || role === 'button' ||
+              cls.indexOf('expandable') >= 0 || cls.indexOf('Expandable') >= 0 ||
+              walker.getAttribute('aria-expanded') !== null);
+            if (isClickable) {
+              candidate = walker;
+              break;
+            }
+            walker = walker.parentElement;
+          }
+
+          // Also check siblings of the node for expand buttons
+          if (!candidate && node.parentElement) {
+            var siblings = node.parentElement.children;
+            for (var si = 0; si < siblings.length; si++) {
+              var sib = siblings[si];
+              var sTag = sib.tagName ? sib.tagName.toLowerCase() : '';
+              var sRole = sib.getAttribute ? (sib.getAttribute('role') || '') : '';
+              var sCls = sib.getAttribute ? (sib.getAttribute('class') || '') : '';
+              if (sTag === 'button' || sRole === 'button' ||
+                  sCls.indexOf('expandable') >= 0 || sCls.indexOf('Expandable') >= 0 ||
+                  sib.getAttribute('aria-expanded') !== null) {
+                candidate = sib;
+                break;
+              }
+            }
+          }
+
+          // Also check child buttons of the node itself
+          if (!candidate) {
+            var childBtns = node.querySelectorAll('button, [role="button"], [aria-expanded]');
+            if (childBtns.length > 0) {
+              candidate = childBtns[0];
+            }
+          }
+
+          // Also check next sibling and its children
+          if (!candidate && node.nextElementSibling) {
+            var nextSib = node.nextElementSibling;
+            var nsTag = nextSib.tagName ? nextSib.tagName.toLowerCase() : '';
+            if (nsTag === 'button' || (nextSib.getAttribute && nextSib.getAttribute('role') === 'button')) {
+              candidate = nextSib;
+            } else {
+              var nsBtns = nextSib.querySelectorAll('button, [role="button"], [aria-expanded]');
+              if (nsBtns.length > 0) {
+                candidate = nsBtns[0];
+              }
+            }
+          }
+
+          if (candidate) {
+            if (candidate.getAttribute('data-exporter-clicked') === '1') continue;
+            var cExp = candidate.getAttribute('aria-expanded');
+            if (cExp === 'true') continue;
+            var cRect = candidate.getBoundingClientRect();
+            if (cRect.width > 0 && cRect.height > 0) {
+              candidate.setAttribute('data-exporter-clicked', '1');
+              if (candidate['click']) candidate['click']();
               clicked++;
             }
           }
         }
 
-        var chevrons = document.querySelectorAll('[class*="EndOfRunSummary"] button, [class*="EndOfRunSummary"] [role="button"], [class*="endOfRun"] button');
-        for (var j = 0; j < chevrons.length; j++) {
-          var ch = chevrons[j];
+        // Strategy B: Also try all buttons/expandables inside EndOfRunSummary containers
+        var endOfRunBtns = document.querySelectorAll(
+          '[class*="EndOfRunSummary"] button, [class*="EndOfRunSummary"] [role="button"], ' +
+          '[class*="EndOfRunSummary"] [aria-expanded], [class*="endOfRun"] button, ' +
+          '[class*="endOfRun"] [role="button"], [class*="endOfRun"] [aria-expanded]'
+        );
+        for (var j = 0; j < endOfRunBtns.length; j++) {
+          var ch = endOfRunBtns[j];
           if (ch.getAttribute('data-exporter-clicked') === '1') continue;
+          var chExp = ch.getAttribute('aria-expanded');
+          if (chExp === 'true') continue;
           var chText = (ch.textContent || '').trim();
-          if (chText.indexOf('$') >= 0 || chText.indexOf('Agent') >= 0 || chText.indexOf('Usage') >= 0) {
-            var chExp = ch.getAttribute('aria-expanded');
-            if (chExp === 'true') continue;
+          if (chText.indexOf('$') >= 0 || chText.indexOf('Agent') >= 0 || chText.indexOf('Usage') >= 0 || chText.length < 5) {
             var chRect = ch.getBoundingClientRect();
             if (chRect.width > 0 && chRect.height > 0) {
               ch.setAttribute('data-exporter-clicked', '1');
@@ -409,7 +479,7 @@ export class ReplitScraper {
     for (var cpRound = 0; cpRound < 3; cpRound++) {
       var cpClicked = await page.evaluate(function() {
         var clicked = 0;
-        var allEls = document.querySelectorAll('button, [role="button"], summary, details, [class*="expandable"], [class*="Expandable"]');
+        var allEls = document.querySelectorAll('button, [role="button"], summary, details, [class*="expandable"], [class*="Expandable"], [aria-expanded]');
         for (var i = 0; i < allEls.length; i++) {
           var el = allEls[i];
           if (el.getAttribute('data-exporter-clicked') === '1') continue;
@@ -441,30 +511,38 @@ export class ReplitScraper {
 
     await page.waitForTimeout(1000);
 
-    // Phase 4: Toggle timestamp switches from relative ("4 days ago") to absolute ("3:49 pm, Feb 03, 2026")
+    // Phase 4: Toggle ALL timestamp switches from relative ("4 days ago") to absolute ("3:49 pm, Feb 03, 2026")
     // These are <span> elements with class Timestamp-module and role="switch" aria-checked="false"
+    // We run multiple rounds because expanding sections can reveal new timestamps
     console.log('  Toggling timestamps to absolute format...');
-    var timestampsToggled = await page.evaluate(function() {
-      var toggled = 0;
-      var tsEls = document.querySelectorAll('[class*="Timestamp-module"], [class*="timestamp-module"]');
-      for (var i = 0; i < tsEls.length; i++) {
-        var el = tsEls[i];
-        var role = el.getAttribute('role');
-        var checked = el.getAttribute('aria-checked');
-        if (role === 'switch' && checked === 'false') {
-          var rect = el.getBoundingClientRect();
-          if (rect.width > 0 && rect.height > 0) {
-            if (el['click']) el['click']();
-            toggled++;
+    var totalTimestampsToggled = 0;
+    for (var tsRound = 0; tsRound < 3; tsRound++) {
+      var timestampsToggled = await page.evaluate(function() {
+        var toggled = 0;
+        var tsEls = document.querySelectorAll('[class*="Timestamp-module"], [class*="timestamp-module"]');
+        for (var i = 0; i < tsEls.length; i++) {
+          var el = tsEls[i];
+          var role = el.getAttribute('role');
+          var checked = el.getAttribute('aria-checked');
+          if (role === 'switch' && (checked === 'false' || checked === null)) {
+            var rect = el.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) {
+              if (el['click']) el['click']();
+              toggled++;
+            }
           }
         }
-      }
-      return toggled;
-    });
+        return toggled;
+      });
 
-    if (timestampsToggled > 0) {
-      console.log(`  Toggled ${timestampsToggled} timestamps to absolute format`);
-      await page.waitForTimeout(1500);
+      totalTimestampsToggled += timestampsToggled;
+      if (timestampsToggled === 0) break;
+      await page.waitForTimeout(1000);
+    }
+
+    if (totalTimestampsToggled > 0) {
+      console.log(`  Toggled ${totalTimestampsToggled} timestamps to absolute format`);
+      await page.waitForTimeout(1000);
     } else {
       console.log('  No timestamp switches found to toggle');
     }
@@ -817,7 +895,7 @@ export class ReplitScraper {
         var el = tsEls[i];
         var role = el.getAttribute('role');
         var checked = el.getAttribute('aria-checked');
-        if (role === 'switch' && checked === 'false') {
+        if (role === 'switch' && (checked === 'false' || checked === null)) {
           var rect = el.getBoundingClientRect();
           if (rect.width > 0 && rect.height > 0) {
             if (el['click']) el['click']();
@@ -842,19 +920,28 @@ export class ReplitScraper {
       for (var idx = 0; idx < containers.length; idx++) {
         var el = containers[idx];
 
+        // Helper pattern: matches relative timestamps like "4 days ago", "2 hours ago"
+        var relativePattern = /^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i;
+
         // 1. Timestamp-module span elements (Replit's actual timestamp components)
         // After toggling, these contain absolute timestamps like "3:49 pm, Feb 03, 2026"
+        // If still showing relative text ("4 days ago"), skip — we prefer absolute
         var tsModuleEls = el.querySelectorAll('[class*="Timestamp-module"], [class*="timestamp-module"]');
-        var foundTsModule = false;
+        var foundAbsoluteTs = false;
+        var foundRelativeTs = null as any;
         for (var tmi = 0; tmi < tsModuleEls.length; tmi++) {
           var tmText = (tsModuleEls[tmi].textContent || '').trim();
           if (tmText.length > 0 && tmText.length < 100) {
-            results[idx] = tmText;
-            foundTsModule = true;
-            break;
+            if (!relativePattern.test(tmText)) {
+              results[idx] = tmText;
+              foundAbsoluteTs = true;
+              break;
+            } else {
+              foundRelativeTs = tmText;
+            }
           }
         }
-        if (foundTsModule) continue;
+        if (foundAbsoluteTs) continue;
 
         // 2. <time> element inside (fallback for other UIs)
         var timeEl = el.querySelector('time');
@@ -871,27 +958,32 @@ export class ReplitScraper {
         var elTitle = el.getAttribute('title');
         if (elTitle && elTitle.match(/\d{4}/)) { results[idx] = elTitle; continue; }
 
-        // 4. Real timestamp pattern in own text: "3:49 pm, Feb 03, 2026"
+        // 4. Real absolute timestamp pattern in own text: "3:49 pm, Feb 03, 2026"
         var rawText = (el.textContent || '');
         var realTsMatch = rawText.match(/(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})/i);
         if (realTsMatch) { results[idx] = realTsMatch[1]; continue; }
 
-        // 5. Timestamp CSS class descendants (broader search)
+        // 5. Timestamp CSS class descendants (broader search, prefer absolute)
         var tsEls = el.querySelectorAll('[class*="timestamp"], [class*="Timestamp"], [class*="timeAgo"], [class*="TimeAgo"], [class*="relativeTime"]');
         var foundTsClass = false;
         for (var tsi = 0; tsi < tsEls.length; tsi++) {
           var tsText = (tsEls[tsi].textContent || '').trim();
-          if (tsText.length > 0 && tsText.length < 100) { results[idx] = tsText; foundTsClass = true; break; }
+          if (tsText.length > 0 && tsText.length < 100 && !relativePattern.test(tsText)) {
+            results[idx] = tsText;
+            foundTsClass = true;
+            break;
+          }
         }
         if (foundTsClass) continue;
 
-        // 7. Relative time: "4 days ago"
-        var relMatch = rawText.match(/(\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago)/i);
-        if (relMatch) { results[idx] = relMatch[1]; continue; }
-
-        // 8. ISO timestamp
+        // 6. ISO timestamp
         var isoMatch = rawText.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/);
         if (isoMatch) { results[idx] = isoMatch[1]; continue; }
+
+        // 7. Relative time as last resort (only if nothing else found)
+        if (foundRelativeTs) { results[idx] = foundRelativeTs; continue; }
+        var relMatch = rawText.match(/(\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago)/i);
+        if (relMatch) { results[idx] = relMatch[1]; continue; }
 
         // No timestamp found for this container - will be filled by backward walk below
       }
@@ -929,18 +1021,25 @@ export class ReplitScraper {
       for (var idx = 0; idx < els.length; idx++) {
         var el = els[idx];
 
-        // 1. Timestamp-module span elements (Replit's actual timestamp components)
+        var relativePattern = /^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i;
+
+        // 1. Timestamp-module span elements (prefer absolute over relative)
         var tsModuleEls = el.querySelectorAll('[class*="Timestamp-module"], [class*="timestamp-module"]');
-        var foundTsModule = false;
+        var foundAbsoluteTs = false;
+        var foundRelativeTs = null as any;
         for (var tmi = 0; tmi < tsModuleEls.length; tmi++) {
           var tmText = (tsModuleEls[tmi].textContent || '').trim();
           if (tmText.length > 0 && tmText.length < 100) {
-            results[idx] = tmText;
-            foundTsModule = true;
-            break;
+            if (!relativePattern.test(tmText)) {
+              results[idx] = tmText;
+              foundAbsoluteTs = true;
+              break;
+            } else {
+              foundRelativeTs = tmText;
+            }
           }
         }
-        if (foundTsModule) continue;
+        if (foundAbsoluteTs) continue;
 
         // 2. <time> element (fallback)
         var timeEl = el.querySelector('time');
@@ -956,27 +1055,32 @@ export class ReplitScraper {
         var elTitle = el.getAttribute('title');
         if (elTitle && elTitle.match(/\d{4}/)) { results[idx] = elTitle; continue; }
 
-        // 3. Real timestamp pattern in own text
+        // 3. Real absolute timestamp pattern in own text
         var rawText = (el.textContent || '');
         var realTsMatch = rawText.match(/(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})/i);
         if (realTsMatch) { results[idx] = realTsMatch[1]; continue; }
 
-        // 4. Timestamp CSS class descendants
+        // 4. Timestamp CSS class descendants (prefer absolute)
         var tsEls = el.querySelectorAll('[class*="timestamp"], [class*="Timestamp"], [class*="timeAgo"], [class*="TimeAgo"], [class*="relativeTime"]');
         var foundTsClass = false;
         for (var tsi = 0; tsi < tsEls.length; tsi++) {
           var tsText = (tsEls[tsi].textContent || '').trim();
-          if (tsText.length > 0 && tsText.length < 100) { results[idx] = tsText; foundTsClass = true; break; }
+          if (tsText.length > 0 && tsText.length < 100 && !relativePattern.test(tsText)) {
+            results[idx] = tsText;
+            foundTsClass = true;
+            break;
+          }
         }
         if (foundTsClass) continue;
 
-        // 5. Relative time
-        var relMatch = rawText.match(/(\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago)/i);
-        if (relMatch) { results[idx] = relMatch[1]; continue; }
-
-        // 6. ISO timestamp
+        // 5. ISO timestamp
         var isoMatch = rawText.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/);
         if (isoMatch) { results[idx] = isoMatch[1]; continue; }
+
+        // 6. Relative time as last resort
+        if (foundRelativeTs) { results[idx] = foundRelativeTs; continue; }
+        var relMatch = rawText.match(/(\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago)/i);
+        if (relMatch) { results[idx] = relMatch[1]; continue; }
       }
 
       // Backward walk: inherit from nearest previous element with a timestamp
@@ -1009,9 +1113,16 @@ export class ReplitScraper {
         var rawText = (evEl.textContent || '').trim();
         if (rawText.length < 5) continue;
 
+        // Use innerText to preserve line breaks from block elements (p, div, br, etc.)
+        var innerRaw = ((evEl as any).innerText || rawText).trim();
+
         var cleanedText = rawText.replace(/\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*$/i, '').trim();
         cleanedText = cleanedText.replace(/^\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*/i, '').trim();
         if (cleanedText.length < 5) continue;
+
+        // Also clean innerText version for content output
+        var cleanedInner = innerRaw.replace(/\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*$/i, '').trim();
+        cleanedInner = cleanedInner.replace(/^\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*/i, '').trim();
 
         var dedupKey = cleanedText.substring(0, 200);
         if (seenKeys[dedupKey]) continue;
@@ -1284,7 +1395,7 @@ export class ReplitScraper {
 
         messages.push({
           type: msgType,
-          content: cleanedText.substring(0, 10000),
+          content: cleanedInner.substring(0, 10000),
           timestamp: timestamp,
           index: index++
         });
@@ -1308,10 +1419,14 @@ export class ReplitScraper {
         for (var bi = 0; bi < selectorEls.length; bi++) {
           var bEl = selectorEls[bi];
           var bRaw = (bEl.textContent || '').trim();
+          var bInner = ((bEl as any).innerText || bRaw).trim();
 
           var bClean = bRaw.replace(/\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*$/i, '').trim();
           bClean = bClean.replace(/^\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*/i, '').trim();
           if (bClean.length < 5) continue;
+
+          var bCleanInner = bInner.replace(/\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*$/i, '').trim();
+          bCleanInner = bCleanInner.replace(/^\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*/i, '').trim();
 
           var bKey = bClean.substring(0, 200);
           if (seenKeys[bKey]) continue;
@@ -1335,7 +1450,7 @@ export class ReplitScraper {
 
           messages.push({
             type: bType,
-            content: bClean.substring(0, 10000),
+            content: bCleanInner.substring(0, 10000),
             timestamp: bTimestamp,
             index: index++
           });

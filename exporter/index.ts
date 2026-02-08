@@ -67,7 +67,7 @@ async function main() {
   }
 
   console.log(`
-╔════════════════════════════════════════════════════════════════╗
+╔═══════════════════════════════════════════════════════════════╗
 ║  Replit Agent Exporter v1.0.0                                 ║
 ║                                                               ║
 ║  This tool exports chat history and checkpoints from          ║
@@ -76,7 +76,7 @@ async function main() {
 ║  Security: Your password is never stored. Only browser        ║
 ║  session cookies are saved locally for convenience.           ║
 ║  Delete ./playwright-session.json to clear the session.       ║
-╚════════════════════════════════════════════════════════════════╝
+╚═══════════════════════════════════════════════════════════════╝
 `);
 
   const outputDir = options.output;
