@@ -4,3 +4,7 @@ dist
 server/public
 vite.config.ts.*
 *.tar.gz
+
+# Exporter output and session data
+exports/
+playwright-session.json
