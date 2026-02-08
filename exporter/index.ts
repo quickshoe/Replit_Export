@@ -98,6 +98,8 @@ async function main() {
     const isLoggedIn = await scraper.checkLoggedIn();
     if (!isLoggedIn) {
       console.log('Not logged in. Opening login page...');
+      // Restore the window so the user can see the login page
+      await scraper.restoreWindow();
       await scraper.waitForLogin();
     } else {
       console.log('Already logged in (using saved session).');
@@ -109,6 +111,7 @@ async function main() {
       await scraper.minimizeWindow();
     } else {
       console.log('Verbose mode: browser window will stay visible.');
+      await scraper.restoreWindow();
     }
 
     let urls: string[] = options.urls || [];

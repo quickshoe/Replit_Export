@@ -2,16 +2,7 @@
 
 ## Overview
 
-The Replit Agent Exporter is a Node.js CLI tool designed to backup and export Replit Agent chat history and checkpoint metadata. Its primary purpose is to allow users to extract and preserve their Replit Agent conversations, including detailed work data and usage charge breakdowns.
-
-Key capabilities include:
-- Exporting all chat messages (user and agent)
-- Extracting checkpoint entries with real timestamps and descriptions
-- Expanding "Worked for X" summaries to capture structured work data
-- Detailing agent usage charge breakdowns, including individual line items
-- Calculating duration for each work entry
-
-This tool provides a comprehensive solution for backing up and analyzing interactions with the Replit Agent, offering insights into project progression and agent resource consumption.
+The Replit Agent Exporter is a Node.js CLI tool designed to backup and export Replit Agent chat history and checkpoint metadata. It allows users to extract and preserve their Replit Agent conversations, including detailed work data, usage charge breakdowns, and duration calculations for each work entry. This tool provides a comprehensive solution for backing up and analyzing interactions with the Replit Agent, offering insights into project progression and agent resource consumption.
 
 ## User Preferences
 
@@ -21,59 +12,40 @@ Ask before making major changes.
 
 ## System Architecture
 
-The tool is implemented as a Node.js CLI application, leveraging Playwright for browser automation to interact with the Replit web interface. It does not store user passwords, relying on Playwright's session management to maintain login state via cookies.
+The tool is implemented as a Node.js CLI application, leveraging Playwright for browser automation to interact with the Replit web interface. It maintains login state via cookies without storing user passwords.
 
 **Core Functionality:**
-- **Browser Automation:** Playwright always launches in headed mode (visible browser window) because Replit's web app does not render properly in headless Chromium. After login is confirmed (or if session is already valid), the browser window is automatically minimized via CDP so it stays out of the way during extraction. When `--verbose` is used, the browser stays visible (not minimized) so the user can watch all DOM operations live. Session cookies are saved for persistence.
-- **Data Scraping:** The scraper navigates to specified Replit URLs, auto-scrolls to load full chat history, then processes DOM elements in a multi-step pipeline.
-- **Step-by-Step Processing Pipeline:**
-  0. **Pre-Check: Agent Idle** — Before any DOM interaction, waits for the chat panel to appear in the DOM (up to 5 attempts with broad selectors including `AgentChat`, `ChatPanel`, `AiChat`, `data-testid*="chat"`, and `form:has(textarea)`). Then checks if the Replit Agent is currently working. Detection uses a precise signal: locates the chat input area (form with textarea), then inspects the submit/stop button within it. When idle, this button is an up-arrow (submit); when the agent is running, it becomes a stop button (square icon or aria-label "stop"). The app-level stop button at the top of the page is deliberately ignored (it indicates the app is running, not agent activity). If the agent is active, warns the user in the terminal and polls every 5 seconds (up to 10 minutes) until the agent finishes. Also warns the user not to use the agent while the scraper is running. Waits 3 seconds after agent finishes for DOM to settle.
-  1. **Step 1: Load & Expand** — Scrolls to load full chat history, then performs targeted expansion (clicks "X messages & X actions", "Checkpoint made", "Worked for X" buttons).
-  2. **Step 2: Git Tab** — Navigates to the Git tab, scrolls to load all commits. Uses commit-entry-based detection to check whether timestamps need conversion (see "Commit-Entry-Based Timestamp Detection" below). If relative, clicks one timestamp to convert ALL to absolute. Then performs read-only extraction of commit messages and timestamps. CRITICAL: commit description lines are never clicked (clicking navigates away from the list). Saves `git-tab-debug.json` for DOM debugging.
-  3. **Step 3: Navigate Back to Chat** — Returns to the chat panel via tab click or URL navigation. Verifies chat panel is loaded by checking for event containers, with retry logic (up to 3 attempts) including fallback to direct URL navigation.
-  4. **Step 4: Hover Durations** — Hovers over "Time worked" elements in "Worked for X" sections to capture precise duration tooltips (e.g., "6 minutes 30 seconds" instead of truncated "6 minutes"). Stores as `data-precise-duration` attribute.
-  5. **Step 5: Extract** — Read-only extraction of all containers. Timestamps are already absolute from the Git tab click. Phase 3.5 merges precise durations from hover.
-- **Key Insight: One-Click Timestamp Conversion** — Clicking a single relative timestamp in the Git tab converts ALL relative timestamps across the entire UI to absolute. This eliminates the need for per-element hover-based timestamp resolution (the old `resolveRelativeTimestamps` phase). The conversion may persist across sessions, so the scraper checks first before clicking.
-- **Commit-Entry-Based Timestamp Detection** — The `clickOneRelativeTimestamp` method uses targeted, commit-entry-based logic (not broad DOM scanning) to determine whether timestamps need conversion:
-  1. Finds commit **container** elements (not message sub-elements). Uses container-level selectors first (`CommitList li`, `data-testid*="commit"`, etc.). If none found, walks up from message elements to find their commit container parent.
-  2. For each commit container, verifies it has a commit description (message text > 5 chars).
-  3. Checks the timestamp element within that container (or its next sibling) to classify:
-     - **Absolute** (time-of-day like "3:45 PM", date like "Jan 2, 2024", numeric date like "1/2/2024", or `datetime` attribute) → return `true` immediately, no click needed.
-     - **Relative** ("X ago" / "just now") → click that timestamp element, verify conversion, retry with parent click if needed.
-     - **Neither** → keep scanning to the next commit entry.
-  4. After clicking, verifies the same commit entry's timestamp changed to absolute. If not, retries by clicking the parent element.
-- **Work Entry Detection:** Work entries are identified by structural evidence, not just text content. A container must have either an `EndOfRunSummary` class or expandable structure (`aria-expanded`, `Expandable` class) to be treated as a work entry. This prevents user chat messages containing "Worked for" or "Time worked" from being misidentified as work entries.
-- **Robust Extraction:** Fallback selectors run only when the primary extraction yields zero results. Work entries are deduplicated using composite keys (timestamp + duration + fee + actions + lines). Each work entry carries its DOM container index (`_containerIdx`) for deterministic cross-phase mapping.
-- **Precise Duration:** Extracts tooltip/title attributes on duration elements to capture precise times (e.g., "6 minutes 30 seconds") instead of truncated display text ("6 minutes"). Uses Playwright hover to trigger tooltip popups on duration elements, reads the tooltip content from floating DOM elements (`[role="tooltip"]`, Radix popper wrappers, etc.), and stores the precise value as a `data-precise-duration` attribute. Phase 3.5 then re-reads these attributes using deterministic container index mapping and merges precise durations into the extracted work entries. Falls back to `title`/`aria-label` attributes if hover doesn't produce a tooltip.
-- **Timestamp Strategy (Explicit Per Entry Type):** After the one-click conversion in the Git tab (or if timestamps are already absolute from a prior session), all timestamps are absolute. Extraction uses entry-type-specific rules:
-  - **Work entries:** Always inherit timestamp from the preceding checkpoint (`prevTimestamp`). Internal timestamp search is skipped entirely.
-  - **Checkpoints:** Timestamp is embedded within their own container text. Searched internally only, falls back to `prevTimestamp`.
-  - **Messages:** Timestamp is typically in a following sibling element *outside* the container. Search order: (1) internal container search, (2) check up to 3 `nextElementSibling` elements for timestamp patterns (same regex/selectors as internal search), (3) fall back to `prevTimestamp`.
-  - Relative timestamps are skipped (filtered out) at all levels.
-- **Git Commit Scraping:** The scraper navigates to the Git tab BEFORE chat extraction. It scrolls to load all commits, checks whether timestamps are already absolute or need conversion via the commit-entry-based detection, then performs a read-only extraction of commit messages and timestamps. CRITICAL: commit description lines are never clicked (clicking navigates away from the list). Git commits are stored in the JSON output and matched to work entries during CSV export.
-- **Git-to-Work-Entry Matching:** In `work-tracking.csv`, "Saved progress at the end of the loop" checkpoints are matched to git commits by timestamp proximity (3-minute window). The matching git commit's description replaces the boilerplate text. Processing runs from most recent to oldest for correct temporal association. Each commit matches at most one checkpoint (1:1 mapping). "Transitioned from Plan to Build mode" descriptions are kept as-is. Duplicate descriptions are eliminated — each description is used at most once across all work entries.
-- **Boilerplate Detection:** Uses startsWith patterns (`/^saved progress/i`, `/^transitioned from \w+ to \w+ mode/i`) for broader matching of boilerplate descriptions.
-- **DOM Debug Output:** Saves `dom-debug.json` with chat container structure samples and `git-tab-debug.json` with Git tab structure for debugging DOM changes.
-- **Hover Optimization:** Duration elements showing only seconds (e.g., "30 seconds") are skipped during hover, since hovering cannot add any precision beyond what's already displayed.
-- **Browser Disconnect Handling:** If the browser is closed unexpectedly (e.g., via Cmd-W), the tool catches the disconnect error and prints a user-friendly message instead of crashing with a stack trace. Detects "Target closed", "browser has been closed", "Browser closed", and "Protocol error" patterns.
-- **Extraction Timing:** The results summary includes elapsed extraction time (from start to finish) so users can monitor tool performance.
-- **CLI Flags:** `-v, --verbose` (show detailed per-item logs for hover and precision merge), `-d, --dry-run` (first URL only), `--clear-session` (delete saved session and exit), `-u, --urls <urls...>` (space-separated URLs), `-o, --output <dir>` (output directory, defaults to `./exports`).
-- **Output Generation:** Exports are organized in per-URL directories with run timestamps:
-    - **Directory Structure:** Each URL gets a subdirectory named `{ReplName} - YYYYMMDD_HH-MM` inside the main exports directory. All per-URL files go there.
-    - **JSON:** Individual `.json` file per repl, containing structured work entries and git commits.
-    - **CSV:** `all-events.csv` (combined messages, checkpoints, work entries, sorted by index then timestamp, includes index column), `chat.csv` (clean chat messages only), `work-tracking.csv` (structured work data with index number, description from git commit matching or nearest checkpoint or preceding message, dedup by index, no duplicate descriptions), `work-summary.csv` (daily aggregated totals with human-readable duration and numeric minutes column).
-    - **Markdown:** `chat.md` provides a human-readable chat history with all events, speakers, and timestamps.
-    - **Combined Work Summary:** `{YYYYMMDD_HH-MM}_work-summary.csv` in the main exports directory aggregates all URLs with per-URL daily subtotals, sorted by repl name then date.
-- **Unified Re-Indexing:** After extraction and deduplication, ALL entry types (messages, checkpoints, work entries) are combined, sorted by their original DOM container index (`_containerIdx`), and assigned sequential indices (0, 1, 2, ...). This ensures unique indices across all entry types and preserves DOM/chronological order.
+- **Browser Automation:** Playwright operates in a headed, minimized browser instance. It restores the window for user interaction during login if necessary, then minimizes it again. Verbose mode keeps the browser visible for live DOM operation viewing.
+- **Data Scraping Pipeline:** The scraper navigates to Replit URLs, auto-scrolls, and processes DOM elements through a multi-step pipeline:
+    1.  **Agent Idle Check:** Verifies the Replit Agent is idle before proceeding, waiting and warning the user if the agent is active.
+    2.  **Load & Expand:** Scrolls to load full chat history and expands all relevant sections like "X messages & X actions," "Checkpoint made," and "Worked for X."
+    3.  **Git Tab Navigation & Timestamp Conversion:** Navigates to the Git tab, scrolls to load all commits, and clicks a single relative timestamp to convert all UI timestamps to absolute format. Extracts commit messages and timestamps.
+    4.  **Return to Chat:** Navigates back to the chat panel.
+    5.  **Hover Durations:** Hovers over "Time worked" elements within "Worked for X" sections to capture precise duration tooltips.
+    6.  **Extraction:** Performs read-only extraction of all chat, checkpoint, and work entry containers, incorporating precise durations.
+- **Key Insight: One-Click Timestamp Conversion:** A single click on a relative timestamp in the Git tab converts all relative timestamps across the entire Replit UI to absolute values, simplifying timestamp resolution.
+- **Work Entry Detection:** Work entries are identified by structural DOM evidence (e.g., `EndOfRunSummary` class or expandable attributes) to prevent misidentification of user messages.
+- **Robust Extraction:** Employs fallback selectors and deduplicates work entries using composite keys.
+- **Precise Duration:** Extracts precise duration from tooltips triggered by Playwright hover actions.
+- **Timestamp Strategy:** After the Git tab conversion, all timestamps are absolute. Extraction uses entry-type-specific rules for work entries (inherit from preceding checkpoint), checkpoints (internal search), and messages (internal search or next sibling elements).
+- **Git Commit Scraping & Matching:** Git commits are scraped from the Git tab and matched to "Saved progress at the end of the loop" checkpoints by timestamp proximity for enriching work entry descriptions.
+- **Output Generation:** Exports are organized into per-URL directories with run timestamps, producing:
+    -   JSON files for structured data.
+    -   CSV files: `all-events.csv`, `chat.csv`, `work-tracking.csv`, `work-summary.csv`.
+    -   Markdown: `chat.md`.
+    -   A combined `_work-summary.csv` aggregating data from all URLs.
+- **Unified Re-Indexing:** All extracted entry types (messages, checkpoints, work entries) are combined, sorted by their original DOM order, and assigned sequential indices for unique identification and chronological consistency.
 
 **Technical Implementations:**
-- **Playwright `page.evaluate` Context:** Code executed within `page.evaluate` strictly adheres to pure ES5 JavaScript, avoiding modern JS features (`const`/`let`, arrow functions, `forEach`, `.includes()`, regex `s` flag) to ensure compatibility within the browser context. Special attention is paid to `el.getAttribute('class')` over `el.className` for SVG compatibility.
-- **Navigation Strategy:** Uses `waitUntil: 'domcontentloaded'` for navigation instead of `networkidle` due to Replit's constant WebSocket connections. Navigation directly to the repl URL automatically loads the agent chat panel.
-- **Timestamp Extraction:** Uses entry-type-specific rules (see Timestamp Strategy above). Internal search employs a prioritized strategy: (1) regex match for absolute timestamp pattern in text (e.g., "3:45 PM, January 8, 2025"), (2) Timestamp-module element text content (only if non-relative), (3) `<time>` element `datetime` attribute or text. For messages, additionally checks up to 3 `nextElementSibling` elements. Work entries skip internal search entirely and inherit from the preceding checkpoint. The old `data-resolved-timestamp` attribute system has been removed — timestamps are now absolute from the one-click Git tab conversion.
-- **DOM Pattern Recognition:** Leverages specific Replit DOM patterns (e.g., `EndOfRunSummary-module__*__root`, `ExpandableFeedContent-module__*__expandableButton`, `aria-expanded` attributes) to identify and interact with expandable content sections.
+- **Playwright `page.evaluate` Context:** CRITICAL: All code inside `page.evaluate()` blocks MUST be pure ES5 JavaScript with NO TypeScript syntax (`as` casts, typed declarations like `var x: Type`, etc.). Functions passed to `page.evaluate` are serialized and run in the browser context where esbuild helpers (like `__name`) do not exist. TypeScript syntax causes esbuild to inject helper functions that crash at runtime. LSP warnings within these blocks are expected and non-blocking (tsc --noEmit passes cleanly).
+- **Navigation Strategy:** Uses `waitUntil: 'domcontentloaded'` for navigation due to Replit's continuous WebSocket connections.
+- **Timestamp Extraction:** Leverages specific DOM patterns and a prioritized search strategy for robust timestamp capture.
+- **DOM Pattern Recognition:** Utilizes Replit-specific DOM classes and attributes for identifying and interacting with content.
+- **File Attachment Detection:** Identifies and extracts filenames from user messages containing only file attachments.
+- **Browser Disconnect Handling:** Gracefully handles unexpected browser closures.
 
 ## External Dependencies
 
-- **Playwright:** Used for browser automation to interact with the Replit web interface, including navigation, DOM manipulation, and screenshotting.
-- **Node.js:** The core runtime environment for the CLI tool.
-- **TypeScript:** The primary language used for development, providing type safety and improved code maintainability.
+-   **Playwright:** Browser automation.
+-   **Node.js:** Runtime environment.
+-   **TypeScript:** Language for development.

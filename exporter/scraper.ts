@@ -32,6 +32,7 @@ export class ReplitScraper {
     console.log('Launching browser...');
     this.browser = await chromium.launch({
       headless: false,
+      args: ['--start-minimized'],
     });
 
     if (fs.existsSync(SESSION_FILE)) {
@@ -63,6 +64,21 @@ export class ReplitScraper {
       await cdp.detach();
     } catch {
       // Minimize is best-effort; some environments may not support it
+    }
+  }
+
+  async restoreWindow(): Promise<void> {
+    if (!this.page) return;
+    try {
+      const cdp = await this.page.context().newCDPSession(this.page);
+      const { windowId } = await cdp.send('Browser.getWindowForTarget');
+      await cdp.send('Browser.setWindowBounds', {
+        windowId,
+        bounds: { windowState: 'normal' },
+      });
+      await cdp.detach();
+    } catch {
+      // Restore is best-effort
     }
   }
 
@@ -327,10 +343,10 @@ export class ReplitScraper {
     try {
       const domDebug = await page.evaluate(function() {
         var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
-        var info = [] as any[];
+        var info = [];
         for (var i = 0; i < containers.length && i < 20; i++) {
           var c = containers[i];
-          var children = [] as any[];
+          var children = [];
           for (var j = 0; j < c.children.length && j < 10; j++) {
             var ch = c.children[j];
             children.push({
@@ -437,18 +453,18 @@ export class ReplitScraper {
         '[data-testid*="chat"]',
         '[class*="AiChat"]', '[class*="aiChat"]'
       ];
-      var chatPanel = null as Element | null;
+      var chatPanel = null;
       for (var ps = 0; ps < panelSelectors.length; ps++) {
         chatPanel = document.querySelector(panelSelectors[ps]);
         if (chatPanel) break;
       }
 
       // If we can't find a named chat panel, fall back to searching the whole document
-      var searchRoot = (chatPanel || document) as Element | Document;
+      var searchRoot = chatPanel || document;
 
       // Step 2: Find a form containing a textarea (the chat input area).
       var allForms = searchRoot.querySelectorAll('form');
-      var chatForm = null as Element | null;
+      var chatForm = null;
       for (var f = 0; f < allForms.length; f++) {
         if (allForms[f].querySelector('textarea')) {
           chatForm = allForms[f];
@@ -459,8 +475,8 @@ export class ReplitScraper {
       if (!chatForm) {
         var textareas = searchRoot.querySelectorAll('textarea');
         for (var t = 0; t < textareas.length; t++) {
-          var parent = textareas[t].parentElement as Element | null;
-          while (parent && parent !== (searchRoot as Element)) {
+          var parent = textareas[t].parentElement;
+          while (parent && parent !== searchRoot) {
             if (parent.querySelector('button')) {
               chatForm = parent;
               break;
@@ -477,7 +493,7 @@ export class ReplitScraper {
         var btns = chatForm.querySelectorAll('button');
         for (var b = 0; b < btns.length; b++) {
           var btn = btns[b];
-          var rect = (btn as HTMLElement).getBoundingClientRect();
+          var rect = btn.getBoundingClientRect();
           if (rect.width <= 0 || rect.height <= 0) continue;
 
           // Check aria-label for "stop" — safe to use indexOf here because
@@ -542,30 +558,31 @@ export class ReplitScraper {
   private async waitForAgentIdle(page: Page): Promise<void> {
     console.log('\nPre-check: Checking if Replit Agent is currently working...');
 
-    // Wait for the chat panel to appear in the DOM before checking
-    const chatPanelSelector = [
-      '[class*="AgentChat"]',
-      '[class*="agentChat"]',
-      '[class*="agent-chat"]',
-      '[class*="ChatPanel"]',
-      '[class*="chatPanel"]',
-      '[class*="chat-panel"]',
+    // Wait for the chat panel or any interactive element to appear in the DOM before checking.
+    // We use multiple selector groups with increasing broadness:
+    //  1. Named chat panel classes
+    //  2. Textarea/form (the chat input area itself)
+    //  3. Event containers (already-rendered chat messages)
+    const chatPanelSelectors = [
+      '[class*="AgentChat"]', '[class*="agentChat"]', '[class*="agent-chat"]',
+      '[class*="ChatPanel"]', '[class*="chatPanel"]', '[class*="chat-panel"]',
       '[data-testid*="chat"]',
-      '[class*="AiChat"]',
-      '[class*="aiChat"]',
-      'form:has(textarea)',
-    ].join(', ');
+      '[class*="AiChat"]', '[class*="aiChat"]',
+      'form:has(textarea)', 'textarea',
+      '[class*="eventContainer"]', '[class*="EventContainer"]', '[data-event-type]',
+    ];
+    const chatPanelSelector = chatPanelSelectors.join(', ');
 
     let chatPanelFound = false;
     for (let attempt = 0; attempt < 5; attempt++) {
       try {
-        await page.waitForSelector(chatPanelSelector, { timeout: 5000 });
+        await page.waitForSelector(chatPanelSelector, { timeout: 8000 });
         chatPanelFound = true;
         break;
       } catch {
         if (attempt < 4) {
           console.log(`  Waiting for chat panel to load... (attempt ${attempt + 1}/5)`);
-          await page.waitForTimeout(2000);
+          await page.waitForTimeout(3000);
         }
       }
     }
@@ -644,7 +661,7 @@ export class ReplitScraper {
       for (var i = 0; i < tabs.length; i++) {
         var text = (tabs[i].textContent || '').trim().toLowerCase();
         if (text === 'git' || text === 'version control' || text === 'history') {
-          (tabs[i] as HTMLElement).click();
+          tabs[i].click();
           return true;
         }
       }
@@ -653,7 +670,7 @@ export class ReplitScraper {
         '[aria-label*="Git" i], [aria-label*="Version" i]'
       );
       if (gitIcons.length > 0) {
-        (gitIcons[0] as HTMLElement).click();
+        gitIcons[0].click();
         return true;
       }
       return false;
@@ -698,7 +715,7 @@ export class ReplitScraper {
         );
         var scrolled = false;
         for (var i = 0; i < panels.length; i++) {
-          var el = panels[i] as HTMLElement;
+          var el = panels[i];
           if (el.scrollHeight > el.clientHeight + 50) {
             el.scrollTop = el.scrollHeight;
             scrolled = true;
@@ -744,7 +761,7 @@ export class ReplitScraper {
       var gitDebug = await page.evaluate(function() {
         var body = document.body;
         var panels = document.querySelectorAll('[role="tabpanel"], [class*="git" i], [class*="commit" i], [class*="VersionControl"]');
-        var panelInfo = [] as any[];
+        var panelInfo = [];
         for (var pi = 0; pi < panels.length && pi < 5; pi++) {
           var p = panels[pi];
           panelInfo.push({
@@ -757,7 +774,7 @@ export class ReplitScraper {
           });
         }
         var commitEls = document.querySelectorAll('[class*="commit" i]');
-        var commitInfo = [] as any[];
+        var commitInfo = [];
         for (var ci = 0; ci < commitEls.length && ci < 10; ci++) {
           var c = commitEls[ci];
           commitInfo.push({
@@ -779,7 +796,7 @@ export class ReplitScraper {
 
     // Step 2c: Extract commits (read-only, no clicking commit lines)
     var commits: GitCommit[] = await page.evaluate(function() {
-      var results: Array<{ message: string; timestamp: string | null; hash: string | null }> = [];
+      var results = [];
 
       var commitItems = document.querySelectorAll(
         '[class*="commit" i] [class*="message" i], ' +
@@ -791,7 +808,7 @@ export class ReplitScraper {
         commitItems = document.querySelectorAll('[class*="commit" i]');
       }
 
-      var seen = {} as Record<string, boolean>;
+      var seen = {};
 
       for (var i = 0; i < commitItems.length; i++) {
         var el = commitItems[i];
@@ -837,7 +854,7 @@ export class ReplitScraper {
         }
         if (!message) continue;
 
-        var timestamp: string | null = null;
+        var timestamp = null;
 
         var timeEl = el.querySelector('time, [class*="time" i], [class*="date" i], [class*="ago" i]');
         if (timeEl) {
@@ -910,11 +927,11 @@ export class ReplitScraper {
       if (commitContainers.length === 0) {
         // Find message elements and resolve to their commit container parent
         var msgEls = document.querySelectorAll('[class*="commit" i] [class*="message" i]');
-        var containers: Element[] = [];
-        var seenContainers: Record<string, boolean> = {};
+        var containers = [];
+        var seenContainers = {};
         for (var m = 0; m < msgEls.length; m++) {
           // Walk up to find the commit container
-          var parent: Element | null = msgEls[m];
+          var parent = msgEls[m];
           while (parent) {
             var cls = (parent.getAttribute('class') || '').toLowerCase();
             if (cls.indexOf('commit') >= 0 && parent !== msgEls[m]) {
@@ -936,7 +953,7 @@ export class ReplitScraper {
           }
         }
         // Convert to a NodeList-like structure for uniform iteration
-        commitContainers = containers as any;
+        commitContainers = containers;
       }
 
       // Step 2: Scan each commit container for description + timestamp
@@ -1025,12 +1042,12 @@ export class ReplitScraper {
         '[class*="CommitList"] li, [data-testid*="commit"], ' +
         '[class*="commit-entry" i], [class*="CommitEntry"]'
       );
-      var containers: Element[] = [];
+      var containers = [];
       if (commitContainers.length === 0) {
         var msgEls = document.querySelectorAll('[class*="commit" i] [class*="message" i]');
-        var seenC: Record<string, boolean> = {};
+        var seenC = {};
         for (var m = 0; m < msgEls.length; m++) {
-          var p: Element | null = msgEls[m];
+          var p = msgEls[m];
           while (p) {
             var cls = (p.getAttribute('class') || '').toLowerCase();
             if (cls.indexOf('commit') >= 0 && p !== msgEls[m]) {
@@ -1053,7 +1070,7 @@ export class ReplitScraper {
       var commitEl = containers[targetIndex];
 
       if (useSibling) {
-        var sib = commitEl.nextElementSibling as HTMLElement;
+        var sib = commitEl.nextElementSibling;
         if (sib) {
           sib.scrollIntoView({ block: 'center', behavior: 'instant' });
           sib.click();
@@ -1061,15 +1078,15 @@ export class ReplitScraper {
         }
       }
 
-      var timeEl = commitEl.querySelector('time, [class*="time" i], [class*="date" i], [class*="ago" i], [class*="Timestamp"]') as HTMLElement;
+      var timeEl = commitEl.querySelector('time, [class*="time" i], [class*="date" i], [class*="ago" i], [class*="Timestamp"]');
       if (timeEl) {
         timeEl.scrollIntoView({ block: 'center', behavior: 'instant' });
         timeEl.click();
         return 'clicked-time';
       }
 
-      (commitEl as HTMLElement).scrollIntoView({ block: 'center', behavior: 'instant' });
-      (commitEl as HTMLElement).click();
+      commitEl.scrollIntoView({ block: 'center', behavior: 'instant' });
+      commitEl.click();
       return 'clicked-container';
     }, { targetIndex: detection.index, useSibling: detection.useSibling });
 
@@ -1097,12 +1114,12 @@ export class ReplitScraper {
         '[class*="CommitList"] li, [data-testid*="commit"], ' +
         '[class*="commit-entry" i], [class*="CommitEntry"]'
       );
-      var containers: Element[] = [];
+      var containers = [];
       if (commitContainers.length === 0) {
         var msgEls = document.querySelectorAll('[class*="commit" i] [class*="message" i]');
-        var seenC: Record<string, boolean> = {};
+        var seenC = {};
         for (var m = 0; m < msgEls.length; m++) {
-          var p: Element | null = msgEls[m];
+          var p = msgEls[m];
           while (p) {
             var cls = (p.getAttribute('class') || '').toLowerCase();
             if (cls.indexOf('commit') >= 0 && p !== msgEls[m]) {
@@ -1161,12 +1178,12 @@ export class ReplitScraper {
         '[class*="CommitList"] li, [data-testid*="commit"], ' +
         '[class*="commit-entry" i], [class*="CommitEntry"]'
       );
-      var containers: Element[] = [];
+      var containers = [];
       if (commitContainers.length === 0) {
         var msgEls = document.querySelectorAll('[class*="commit" i] [class*="message" i]');
-        var seenC: Record<string, boolean> = {};
+        var seenC = {};
         for (var m = 0; m < msgEls.length; m++) {
-          var p: Element | null = msgEls[m];
+          var p = msgEls[m];
           while (p) {
             var cls = (p.getAttribute('class') || '').toLowerCase();
             if (cls.indexOf('commit') >= 0 && p !== msgEls[m]) {
@@ -1187,7 +1204,7 @@ export class ReplitScraper {
 
       if (targetIndex >= 0 && targetIndex < containers.length) {
         var commitEl = containers[targetIndex];
-        var timeEl = commitEl.querySelector('time, [class*="time" i], [class*="date" i], [class*="ago" i], [class*="Timestamp"]') as HTMLElement;
+        var timeEl = commitEl.querySelector('time, [class*="time" i], [class*="date" i], [class*="ago" i], [class*="Timestamp"]');
         if (timeEl && timeEl.parentElement) {
           timeEl.parentElement.scrollIntoView({ block: 'center', behavior: 'instant' });
           timeEl.parentElement.click();
@@ -1210,7 +1227,7 @@ export class ReplitScraper {
           '[class*="CommitList"] li, [data-testid*="commit"], ' +
           '[class*="commit-entry" i], [class*="CommitEntry"]'
         );
-        var containers: Element[] = [];
+        var containers = [];
         if (commitContainers.length === 0) {
           var allC = document.querySelectorAll('[class*="commit" i]');
           for (var ac = 0; ac < allC.length; ac++) containers.push(allC[ac]);
@@ -1250,7 +1267,7 @@ export class ReplitScraper {
       for (var i = 0; i < tabs.length; i++) {
         var text = (tabs[i].textContent || '').trim().toLowerCase();
         if (text === 'chat' || text === 'agent' || text === 'ai' || text === 'assistant') {
-          (tabs[i] as HTMLElement).click();
+          tabs[i].click();
           return true;
         }
       }
@@ -1259,7 +1276,7 @@ export class ReplitScraper {
         '[aria-label*="Chat" i], [aria-label*="Agent" i], [aria-label*="AI" i]'
       );
       if (chatIcons.length > 0) {
-        (chatIcons[0] as HTMLElement).click();
+        chatIcons[0].click();
         return true;
       }
       return false;
@@ -1351,7 +1368,7 @@ export class ReplitScraper {
   private async hoverDurationElements(page: Page, verbose: boolean = false): Promise<number> {
     var durationIndices: number[] = await page.evaluate(function() {
       var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
-      var indices = [] as number[];
+      var indices = [];
       for (var i = 0; i < containers.length; i++) {
         var el = containers[i];
         var text = (el.textContent || '').trim();
@@ -1410,7 +1427,7 @@ export class ReplitScraper {
           return null;
         }
 
-        var durationElements = [] as any[];
+        var durationElements = [];
         for (var si = 0; si < candidates.length; si++) {
           var sel = candidates[si];
           var st = (sel.textContent || '').trim();
@@ -1555,7 +1572,7 @@ export class ReplitScraper {
       var el = containers[idx];
       var rawText = (el.textContent || '').trim();
       if (rawText.length < 3) return null;
-      var innerRaw = ((el as any).innerText || rawText).trim();
+      var innerRaw = (el.innerText || rawText).trim();
 
       var evClass = (el.getAttribute('class') || '').toLowerCase();
       var evEventType = (el.getAttribute('data-event-type') || '').toLowerCase();
@@ -1594,7 +1611,7 @@ export class ReplitScraper {
       //   fall back to prevTimestamp if not found
 
       // === STEP 2: Entry-type-specific timestamp extraction ===
-      var timestamp = null as any;
+      var timestamp = null;
 
       if (isWorkEntry) {
         // Work entries never have their own timestamp; inherit from preceding checkpoint
@@ -1710,7 +1727,7 @@ export class ReplitScraper {
         if (hoverPrecise && hoverPrecise.length > 0 && /\d+\s*(second|minute|hour|day|week|month|year)s?/i.test(hoverPrecise)) {
           wDuration = hoverPrecise;
         } else {
-          var preciseDuration = null as any;
+          var preciseDuration = null;
           var searchEls = (endOfRunRoot || el).querySelectorAll('*');
           for (var tdi = 0; tdi < searchEls.length; tdi++) {
             var tdEl = searchEls[tdi];
@@ -1761,7 +1778,7 @@ export class ReplitScraper {
         var codeChangedPlus = codePlusMatch ? parseInt(codePlusMatch[1], 10) : null;
         var codeChangedMinus = codeMinusMatch ? parseInt(codeMinusMatch[1], 10) : null;
 
-        var totalCharge = null as any;
+        var totalCharge = null;
         var costMatches = rawText.match(/\$[\d.]+/g);
         if (costMatches && costMatches.length > 0) {
           totalCharge = parseFloat(costMatches[0].substring(1));
@@ -1799,28 +1816,92 @@ export class ReplitScraper {
         };
       }
 
-      var cleanedText = rawText.replace(/\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*$/i, '').trim();
-      cleanedText = cleanedText.replace(/^\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*/i, '').trim();
-      var cleanedInner = innerRaw.replace(/\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*$/i, '').trim();
-      cleanedInner = cleanedInner.replace(/^\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*/i, '').trim();
-
-      if (cleanedText.length < 5) return null;
-      if (cleanedText.match(/^Worked\s+for\s+/i)) return null;
-      if (cleanedText.match(/^Decided\s+on\s+/i) && cleanedText.length < 100) return null;
-      if (cleanedText.match(/^\d+\s+actions?\s*$/i)) return null;
-      if (cleanedText.match(/^Created task list\s*$/i)) return null;
-      if (cleanedText.match(/^Ready to share\?\s*Publish/i)) return null;
-
       var isUser = evClass.indexOf('usermessage') >= 0 ||
         evClass.indexOf('user-message') >= 0 ||
         evEventType === 'user-message' ||
         evCy === 'user-message' ||
         innerUserMarker !== null;
 
+      var cleanedText = rawText.replace(/\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*$/i, '').trim();
+      cleanedText = cleanedText.replace(/^\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*/i, '').trim();
+      var cleanedInner = innerRaw.replace(/\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*$/i, '').trim();
+      cleanedInner = cleanedInner.replace(/^\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*/i, '').trim();
+
+      // Check for file/image attachments (user messages that are just attached files)
+      var attachmentNames = [];
+      if (isUser) {
+        var imgs = el.querySelectorAll('img[src], img[alt]');
+        for (var ai = 0; ai < imgs.length; ai++) {
+          var imgAlt = (imgs[ai].getAttribute('alt') || '').trim();
+          var imgSrc = (imgs[ai].getAttribute('src') || '').trim();
+          if (imgAlt && imgAlt.length > 0 && imgAlt.length < 200) {
+            attachmentNames.push(imgAlt);
+          } else if (imgSrc) {
+            var srcParts = imgSrc.split('/');
+            var srcName = srcParts[srcParts.length - 1].split('?')[0];
+            if (srcName && srcName.length > 0 && srcName.length < 200) {
+              attachmentNames.push(srcName);
+            }
+          }
+        }
+        var fileLinks = el.querySelectorAll('a[href*="file"], a[href*="upload"], a[href*="attachment"], a[download], [class*="attachment" i], [class*="file" i]:not([class*="profile"])');
+        for (var fi = 0; fi < fileLinks.length; fi++) {
+          var linkText = (fileLinks[fi].textContent || '').trim();
+          var linkDownload = (fileLinks[fi].getAttribute('download') || '').trim();
+          var linkHref = (fileLinks[fi].getAttribute('href') || '').trim();
+          var fileName = linkDownload || linkText;
+          if (!fileName && linkHref) {
+            var hrefParts = linkHref.split('/');
+            fileName = hrefParts[hrefParts.length - 1].split('?')[0];
+          }
+          if (fileName && fileName.length > 0 && fileName.length < 200) {
+            var alreadyHave = false;
+            for (var ch = 0; ch < attachmentNames.length; ch++) {
+              if (attachmentNames[ch] === fileName) { alreadyHave = true; break; }
+            }
+            if (!alreadyHave) attachmentNames.push(fileName);
+          }
+        }
+        // Also check for Replit-specific attached asset patterns
+        var assetEls = el.querySelectorAll('[class*="Attached" i], [class*="attached" i], [class*="Asset" i], [data-testid*="attachment"], [data-testid*="file"]');
+        for (var aei = 0; aei < assetEls.length; aei++) {
+          var assetText = (assetEls[aei].textContent || '').trim();
+          if (assetText && assetText.length > 0 && assetText.length < 200) {
+            var assetAlready = false;
+            for (var ach = 0; ach < attachmentNames.length; ach++) {
+              if (attachmentNames[ach] === assetText) { assetAlready = true; break; }
+            }
+            if (!assetAlready) attachmentNames.push(assetText);
+          }
+        }
+      }
+
+      // If text content is too short, check if we have attachments to use instead
+      if (cleanedText.length < 5) {
+        if (isUser && attachmentNames.length > 0) {
+          cleanedText = attachmentNames.join(', ');
+          cleanedInner = attachmentNames.join(', ');
+        } else {
+          return null;
+        }
+      }
+
+      if (cleanedText.match(/^Worked\s+for\s+/i)) return null;
+      if (cleanedText.match(/^Decided\s+on\s+/i) && cleanedText.length < 100) return null;
+      if (cleanedText.match(/^\d+\s+actions?\s*$/i)) return null;
+      if (cleanedText.match(/^Created task list\s*$/i)) return null;
+      if (cleanedText.match(/^Ready to share\?\s*Publish/i)) return null;
+
+      // If user message has both text and attachments, append filenames
+      var messageContent = cleanedInner;
+      if (isUser && attachmentNames.length > 0 && cleanedInner.length >= 5) {
+        messageContent = cleanedInner + '\n[Attached: ' + attachmentNames.join(', ') + ']';
+      }
+
       return {
         entryType: 'message',
         type: isUser ? 'user' : 'agent',
-        content: cleanedInner.substring(0, 10000),
+        content: messageContent.substring(0, 10000),
         contentKey: cleanedText.substring(0, 200),
         timestamp: timestamp
       };
@@ -2132,7 +2213,7 @@ export class ReplitScraper {
       if (containerIndices.length > 0) {
         var precisionMap = await page.evaluate(function(indices) {
           var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
-          var result = {} as Record<string, string>;
+          var result = {};
           for (var pi = 0; pi < indices.length; pi++) {
             var ci = indices[pi];
             if (ci < containers.length) {
@@ -2241,8 +2322,8 @@ export class ReplitScraper {
 
   private async fallbackExtract(page: Page): Promise<{ messages: ChatMessage[]; checkpoints: Checkpoint[]; workEntries: WorkEntry[] }> {
     var data = await page.evaluate(function() {
-      var messages = [] as any[];
-      var seenKeys = {} as any;
+      var messages = [];
+      var seenKeys = {};
       var index = 0;
 
       var broadSelectors = [
@@ -2260,7 +2341,7 @@ export class ReplitScraper {
       for (var bi = 0; bi < els.length; bi++) {
         var bEl = els[bi];
         var bRaw = (bEl.textContent || '').trim();
-        var bInner = ((bEl as any).innerText || bRaw).trim();
+        var bInner = (bEl.innerText || bRaw).trim();
 
         var bClean = bRaw.replace(/\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*$/i, '').trim();
         bClean = bClean.replace(/^\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago\s*/i, '').trim();
@@ -2274,7 +2355,7 @@ export class ReplitScraper {
         seenKeys[bKey] = true;
 
         var relativePattern = /^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i;
-        var timestamp = null as any;
+        var timestamp = null;
         var tsModuleEls = bEl.querySelectorAll('[class*="Timestamp-module"]');
         for (var tmi = 0; tmi < tsModuleEls.length; tmi++) {
           var tmText = (tsModuleEls[tmi].textContent || '').trim();
