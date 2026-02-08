@@ -29,9 +29,11 @@ The tool is implemented as a Node.js CLI application, leveraging Playwright for 
 - **Sequential Top-Down Walk:** The scraping process involves a "sequential top-down walk" where each DOM element is processed one at a time. This includes toggling relative timestamps to absolute, expanding collapsed sections (work summaries, agent usage, checkpoints), and immediately extracting structured data from each element before proceeding to the next.
 - **Robust Extraction:** Fallback selectors run only when the primary walk yields zero results. Work entries are deduplicated using composite keys (timestamp + duration + fee + actions + lines).
 - **Precise Duration:** Extracts tooltip/title attributes on duration elements to capture precise times (e.g., "6 minutes 30 seconds") instead of truncated display text ("6 minutes").
+- **Agent Usage Expansion:** Enhanced clickable element detection for Agent Usage chevrons with diagnostic logging. Supports SVG icons, cursor:pointer elements, details/summary, and closest() fallback.
+- **Charge Detail Extraction:** Relaxed filters (children.length 10, flexible dollar regex, inline "Label $X.XX" detection). Diagnostic debug logging for troubleshooting empty chargeDetails.
 - **Output Generation:** Exports data into multiple formats:
     - **JSON:** Individual `.json` file per repl, containing structured work entries.
-    - **CSV:** `all-events.csv` (combined messages, checkpoints, work entries), `chat.csv` (clean chat messages only), `work-tracking.csv` (structured work data), and `agent-usage-details.csv` (individual charge line items).
+    - **CSV:** `all-events.csv` (combined messages, checkpoints, work entries), `chat.csv` (clean chat messages only), `work-tracking.csv` (structured work data), `work-summary.csv` (daily aggregated totals with human-readable duration and numeric minutes column), and `agent-usage-details.csv` (individual charge line items).
     - **Markdown:** `chat.md` provides a human-readable chat history with all events, speakers, and timestamps.
 
 **Technical Implementations:**

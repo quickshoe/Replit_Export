@@ -347,75 +347,143 @@ export class ReplitScraper {
   }
 
   private async expandAgentUsageInElement(page: Page, index: number): Promise<boolean> {
-    return await page.evaluate(function(idx) {
+    var result = await page.evaluate(function(idx) {
       var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
-      if (idx >= containers.length) return false;
+      if (idx >= containers.length) return { clicked: false, debug: 'no container at index' };
       var el = containers[idx];
       var rawText = (el.textContent || '').trim();
-      if (rawText.indexOf('Agent Usage') < 0) return false;
+      if (rawText.indexOf('Agent Usage') < 0 && rawText.indexOf('agent usage') < 0) return { clicked: false, debug: 'no Agent Usage text found' };
 
       var clicked = 0;
+      var debugInfo = [] as string[];
 
       var allChildEls = el.querySelectorAll('*');
+
+      var agentUsageEls = [] as any[];
       for (var i = 0; i < allChildEls.length; i++) {
         var child = allChildEls[i];
         var childText = (child.textContent || '').trim();
-        if (childText.indexOf('Agent Usage') < 0) continue;
-        if (childText.length > 200 || child.children.length > 5) continue;
+        if (childText.indexOf('Agent Usage') < 0 && childText.indexOf('agent usage') < 0) continue;
+        if (childText.length > 300) continue;
+        agentUsageEls.push(child);
+      }
+
+      debugInfo.push('Found ' + agentUsageEls.length + ' Agent Usage elements');
+
+      for (var ai = 0; ai < agentUsageEls.length; ai++) {
+        var auEl = agentUsageEls[ai];
+        var auText = (auEl.textContent || '').trim();
+        var auTag = auEl.tagName ? auEl.tagName.toLowerCase() : '';
+        var auCls = auEl.getAttribute ? (auEl.getAttribute('class') || '') : '';
+        debugInfo.push('AU[' + ai + '] tag=' + auTag + ' text=' + auText.substring(0, 80) + ' cls=' + auCls.substring(0, 60) + ' children=' + auEl.children.length);
 
         var candidate = null as any;
-        var walker = child as any;
-        for (var up = 0; up < 8; up++) {
-          if (!walker) break;
+
+        var walker = auEl as any;
+        for (var up = 0; up < 10; up++) {
+          if (!walker || walker === el) break;
           var tag = walker.tagName ? walker.tagName.toLowerCase() : '';
           var role = walker.getAttribute ? (walker.getAttribute('role') || '') : '';
           var cls = walker.getAttribute ? (walker.getAttribute('class') || '') : '';
-          var isClickable = (tag === 'button' || tag === 'summary' || role === 'button' ||
+          var hasAria = walker.getAttribute('aria-expanded') !== null;
+          var isClickable = (tag === 'button' || tag === 'summary' || tag === 'details' || role === 'button' ||
             cls.indexOf('expandable') >= 0 || cls.indexOf('Expandable') >= 0 ||
-            walker.getAttribute('aria-expanded') !== null);
-          if (isClickable && walker.getAttribute('data-exporter-clicked') !== '1') {
+            cls.indexOf('chevron') >= 0 || cls.indexOf('Chevron') >= 0 ||
+            cls.indexOf('collapsible') >= 0 || cls.indexOf('Collapsible') >= 0 ||
+            hasAria || (walker.style && walker.style.cursor === 'pointer'));
+          if (isClickable && walker.getAttribute('data-exporter-au-clicked') !== '1') {
             var cExp = walker.getAttribute('aria-expanded');
-            if (cExp !== 'true') { candidate = walker; break; }
+            if (cExp !== 'true') {
+              candidate = walker;
+              debugInfo.push('  Found clickable via upwalk: tag=' + tag + ' aria=' + cExp);
+              break;
+            }
           }
           walker = walker.parentElement;
         }
 
-        if (!candidate && child.parentElement) {
-          var siblings = child.parentElement.children;
+        if (!candidate && auEl.parentElement) {
+          var parentEl = auEl.parentElement;
+          var parentTag = parentEl.tagName ? parentEl.tagName.toLowerCase() : '';
+          var parentCls = parentEl.getAttribute ? (parentEl.getAttribute('class') || '') : '';
+          if (parentTag === 'button' || parentTag === 'summary' ||
+              (parentEl.getAttribute && parentEl.getAttribute('role') === 'button') ||
+              parentCls.indexOf('expandable') >= 0 || parentCls.indexOf('Expandable') >= 0 ||
+              (parentEl.style && parentEl.style.cursor === 'pointer')) {
+            if (parentEl.getAttribute('data-exporter-au-clicked') !== '1') {
+              candidate = parentEl;
+              debugInfo.push('  Found clickable parent: tag=' + parentTag);
+            }
+          }
+        }
+
+        if (!candidate && auEl.parentElement) {
+          var siblings = auEl.parentElement.children;
           for (var si = 0; si < siblings.length; si++) {
             var sib = siblings[si];
+            if (sib === auEl) continue;
             var sTag = sib.tagName ? sib.tagName.toLowerCase() : '';
             var sRole = sib.getAttribute ? (sib.getAttribute('role') || '') : '';
             var sCls = sib.getAttribute ? (sib.getAttribute('class') || '') : '';
-            if ((sTag === 'button' || sRole === 'button' ||
+            if ((sTag === 'button' || sRole === 'button' || sTag === 'svg' ||
                 sCls.indexOf('expandable') >= 0 || sCls.indexOf('Expandable') >= 0 ||
+                sCls.indexOf('chevron') >= 0 || sCls.indexOf('Chevron') >= 0 ||
+                sCls.indexOf('icon') >= 0 || sCls.indexOf('Icon') >= 0 ||
+                sCls.indexOf('arrow') >= 0 || sCls.indexOf('Arrow') >= 0 ||
                 sib.getAttribute('aria-expanded') !== null) &&
-                sib.getAttribute('data-exporter-clicked') !== '1') {
+                sib.getAttribute('data-exporter-au-clicked') !== '1') {
               var sExp = sib.getAttribute('aria-expanded');
-              if (sExp !== 'true') { candidate = sib; break; }
+              if (sExp !== 'true') {
+                candidate = sib;
+                debugInfo.push('  Found clickable sibling: tag=' + sTag + ' cls=' + sCls.substring(0, 40));
+                break;
+              }
             }
           }
         }
 
         if (!candidate) {
-          var childBtns = child.querySelectorAll('button, [role="button"], [aria-expanded]');
+          var childBtns = auEl.querySelectorAll('button, [role="button"], [aria-expanded], svg, [class*="chevron"], [class*="Chevron"], [class*="icon"], [class*="arrow"]');
           for (var cb = 0; cb < childBtns.length; cb++) {
-            if (childBtns[cb].getAttribute('data-exporter-clicked') !== '1') {
+            if (childBtns[cb].getAttribute('data-exporter-au-clicked') !== '1') {
               var cbExp = childBtns[cb].getAttribute('aria-expanded');
-              if (cbExp !== 'true') { candidate = childBtns[cb]; break; }
+              if (cbExp !== 'true') {
+                candidate = childBtns[cb];
+                var cbTag = childBtns[cb].tagName ? childBtns[cb].tagName.toLowerCase() : '';
+                debugInfo.push('  Found clickable child: tag=' + cbTag);
+                break;
+              }
             }
           }
         }
 
-        if (!candidate && child.nextElementSibling) {
-          var nextSib = child.nextElementSibling;
+        if (!candidate && auEl.nextElementSibling) {
+          var nextSib = auEl.nextElementSibling;
           var nsTag = nextSib.tagName ? nextSib.tagName.toLowerCase() : '';
-          if (nsTag === 'button' || (nextSib.getAttribute && nextSib.getAttribute('role') === 'button')) {
-            if (nextSib.getAttribute('data-exporter-clicked') !== '1') candidate = nextSib;
+          if (nsTag === 'button' || nsTag === 'svg' || (nextSib.getAttribute && nextSib.getAttribute('role') === 'button')) {
+            if (nextSib.getAttribute('data-exporter-au-clicked') !== '1') {
+              candidate = nextSib;
+              debugInfo.push('  Found clickable nextSib: tag=' + nsTag);
+            }
           } else {
-            var nsBtns = nextSib.querySelectorAll('button, [role="button"], [aria-expanded]');
+            var nsBtns = nextSib.querySelectorAll('button, [role="button"], [aria-expanded], svg');
             for (var nb = 0; nb < nsBtns.length; nb++) {
-              if (nsBtns[nb].getAttribute('data-exporter-clicked') !== '1') { candidate = nsBtns[nb]; break; }
+              if (nsBtns[nb].getAttribute('data-exporter-au-clicked') !== '1') {
+                candidate = nsBtns[nb];
+                debugInfo.push('  Found clickable in nextSib child');
+                break;
+              }
+            }
+          }
+        }
+
+        if (!candidate) {
+          var closestClickable = auEl.closest('button, [role="button"], summary, details, [aria-expanded]');
+          if (closestClickable && closestClickable !== el && closestClickable.getAttribute('data-exporter-au-clicked') !== '1') {
+            var ccExp = closestClickable.getAttribute('aria-expanded');
+            if (ccExp !== 'true') {
+              candidate = closestClickable;
+              debugInfo.push('  Found via closest(): tag=' + (closestClickable.tagName || '').toLowerCase());
             }
           }
         }
@@ -423,37 +491,49 @@ export class ReplitScraper {
         if (candidate) {
           var cRect = candidate.getBoundingClientRect();
           if (cRect.width > 0 && cRect.height > 0) {
-            candidate.setAttribute('data-exporter-clicked', '1');
+            candidate.setAttribute('data-exporter-au-clicked', '1');
             if (candidate['click']) candidate['click']();
             clicked++;
+            debugInfo.push('  CLICKED!');
+          } else {
+            debugInfo.push('  Candidate not visible (w=' + cRect.width + ' h=' + cRect.height + ')');
           }
+        } else {
+          debugInfo.push('  No clickable candidate found');
         }
       }
 
       if (clicked === 0) {
         var endOfRunBtns = el.querySelectorAll(
           '[class*="EndOfRunSummary"] button, [class*="EndOfRunSummary"] [role="button"], ' +
-          '[class*="EndOfRunSummary"] [aria-expanded], [class*="endOfRun"] button'
+          '[class*="EndOfRunSummary"] [aria-expanded], [class*="endOfRun"] button, ' +
+          '[class*="EndOfRunSummary"] [class*="chevron"], [class*="EndOfRunSummary"] svg'
         );
+        debugInfo.push('Fallback: found ' + endOfRunBtns.length + ' EndOfRun buttons');
         for (var j = 0; j < endOfRunBtns.length; j++) {
           var ch = endOfRunBtns[j];
-          if (ch.getAttribute('data-exporter-clicked') === '1') continue;
+          if (ch.getAttribute('data-exporter-au-clicked') === '1') continue;
           var chExp = ch.getAttribute('aria-expanded');
           if (chExp === 'true') continue;
           var chText = (ch.textContent || '').trim();
           if (chText.indexOf('$') >= 0 || chText.indexOf('Agent') >= 0 || chText.indexOf('Usage') >= 0 || chText.length < 5) {
             var chRect = ch.getBoundingClientRect();
             if (chRect.width > 0 && chRect.height > 0) {
-              ch.setAttribute('data-exporter-clicked', '1');
+              ch.setAttribute('data-exporter-au-clicked', '1');
               if (ch['click']) ch['click']();
               clicked++;
+              debugInfo.push('  Fallback CLICKED: text=' + chText.substring(0, 40));
             }
           }
         }
       }
 
-      return clicked > 0;
+      return { clicked: clicked > 0, debug: debugInfo.join('\n') };
     }, index);
+    if (result.debug && result.debug.length > 0) {
+      console.log('  [Agent Usage expand] ' + (result.clicked ? 'EXPANDED' : 'NOT expanded') + ':\n    ' + result.debug.replace(/\n/g, '\n    '));
+    }
+    return result.clicked;
   }
 
   private async extractElementData(page: Page, index: number, lastTimestamp: string | null): Promise<any> {
@@ -575,16 +655,19 @@ export class ReplitScraper {
         }
 
         var chargeDetails = [] as any[];
+        var chargeDebug = [] as string[];
         var searchRoot = endOfRunRoot || el;
         var agentUsageHeading = null as any;
         var allChildEls = searchRoot.querySelectorAll('*');
         for (var hi = 0; hi < allChildEls.length; hi++) {
           var hEl = allChildEls[hi];
           var hText = (hEl.textContent || '').trim();
-          if (hText.indexOf('Agent Usage') >= 0 && hText.length < 50) {
+          if ((hText.indexOf('Agent Usage') >= 0 || hText.indexOf('agent usage') >= 0) && hText.length < 80) {
             agentUsageHeading = hEl;
           }
         }
+
+        chargeDebug.push('agentUsageHeading=' + (agentUsageHeading ? 'found' : 'null'));
 
         if (agentUsageHeading) {
           var labelCandidates = [] as any[];
@@ -593,20 +676,37 @@ export class ReplitScraper {
             var childEl = allChildEls[ci];
             var headingPos = agentUsageHeading.compareDocumentPosition(childEl);
             if (!(headingPos & 4)) continue;
-            if (childEl.children.length > 3) continue;
+            if (childEl.children.length > 10) continue;
             var childText = (childEl.textContent || '').trim();
             if (childText.length === 0) continue;
-            var amtMatch = childText.match(/^\$([\d.]+)$/);
+            var amtMatch = childText.match(/^\s*\$\s*([\d,.]+)\s*$/);
             if (amtMatch) {
-              amountCandidates.push({ el: childEl, amount: parseFloat(amtMatch[1]), text: childText, rect: childEl.getBoundingClientRect() });
+              var amtVal = parseFloat(amtMatch[1].replace(/,/g, ''));
+              amountCandidates.push({ el: childEl, amount: amtVal, text: childText, rect: childEl.getBoundingClientRect() });
               continue;
             }
-            if (childText.length > 2 && childText.length < 150 && childText.indexOf('$') < 0) {
+            if (childText.length > 2 && childText.length < 200) {
               var lowerText = childText.toLowerCase();
               if (lowerText === 'agent usage') continue;
+              if (lowerText === 'total') continue;
+              var dollarIdx = childText.indexOf('$');
+              if (dollarIdx >= 0) {
+                var inlineAmtMatch = childText.match(/\$\s*([\d,.]+)/);
+                if (inlineAmtMatch) {
+                  var inlineLabel = childText.substring(0, dollarIdx).replace(/\s+/g, ' ').trim();
+                  var inlineAmt = parseFloat(inlineAmtMatch[1].replace(/,/g, ''));
+                  if (inlineLabel.length > 1 && !isNaN(inlineAmt) && inlineAmt > 0) {
+                    chargeDetails.push({ label: inlineLabel, amount: inlineAmt });
+                    chargeDebug.push('inline: "' + inlineLabel + '" $' + inlineAmt);
+                  }
+                }
+                continue;
+              }
               labelCandidates.push({ el: childEl, text: childText, rect: childEl.getBoundingClientRect() });
             }
           }
+
+          chargeDebug.push('labels=' + labelCandidates.length + ' amounts=' + amountCandidates.length);
 
           var usedLabels = {} as any;
           for (var ami = 0; ami < amountCandidates.length; ami++) {
@@ -616,13 +716,10 @@ export class ReplitScraper {
             for (var li = 0; li < labelCandidates.length; li++) {
               var lbl = labelCandidates[li];
               if (usedLabels[li]) continue;
-              var pos = lbl.el.compareDocumentPosition(amt.el);
-              if (pos & 4) {
-                var vDist = Math.abs(amt.rect.top - lbl.rect.top);
-                if (vDist < bestDistance && vDist < 100) {
-                  bestDistance = vDist;
-                  bestLabel = { index: li, text: lbl.text };
-                }
+              var vDist = Math.abs(amt.rect.top - lbl.rect.top);
+              if (vDist < bestDistance && vDist < 150) {
+                bestDistance = vDist;
+                bestLabel = { index: li, text: lbl.text };
               }
             }
             if (bestLabel) {
@@ -630,7 +727,10 @@ export class ReplitScraper {
               var cleanLabel = bestLabel.text.replace(/\s+/g, ' ').trim();
               if (!isNaN(amt.amount) && amt.amount > 0) {
                 chargeDetails.push({ label: cleanLabel, amount: amt.amount });
+                chargeDebug.push('paired: "' + cleanLabel + '" $' + amt.amount);
               }
+            } else {
+              chargeDebug.push('unpaired amount: $' + amt.amount + ' text="' + amt.text + '"');
             }
           }
 
@@ -648,6 +748,8 @@ export class ReplitScraper {
           }
         }
 
+        chargeDebug.push('chargeDetails=' + chargeDetails.length);
+
         return {
           entryType: 'work',
           timestamp: timestamp,
@@ -658,7 +760,8 @@ export class ReplitScraper {
           codeChangedPlus: codeChangedPlus,
           codeChangedMinus: codeChangedMinus,
           agentUsage: totalCharge,
-          chargeDetails: chargeDetails
+          chargeDetails: chargeDetails,
+          chargeDebug: chargeDebug.join('; ')
         };
       }
 
@@ -1002,7 +1105,10 @@ export class ReplitScraper {
           if (!data) continue;
         }
 
-        // Deduplicate work entries by composite key
+        if (data.chargeDebug) {
+          console.log('  [Charge details debug] ' + data.chargeDebug);
+        }
+
         var weKey = 'WE|' + (data.timestamp || 'noTs') + '|' + (data.timeWorked || '') + '|' + (data.durationSeconds || 0) + '|' + (data.agentUsage != null ? data.agentUsage : 'noFee') + '|' + (data.workDoneActions != null ? data.workDoneActions : '') + '|' + (data.itemsReadLines != null ? data.itemsReadLines : '');
         if (seenKeys[weKey]) continue;
         seenKeys[weKey] = true;

@@ -260,6 +260,118 @@ export function exportWorkTrackingCsv(exports: ReplExport[], outputDir: string):
   return filePath;
 }
 
+export function exportWorkSummaryCsv(exports: ReplExport[], outputDir: string): string {
+  const dailyMap: Record<string, {
+    totalSeconds: number;
+    workDoneActions: number;
+    itemsReadLines: number;
+    codeChangedPlus: number;
+    codeChangedMinus: number;
+    agentUsage: number;
+  }> = {};
+
+  for (const exp of exports) {
+    if (!exp.workEntries) continue;
+    for (const we of exp.workEntries) {
+      let dateKey = 'Unknown';
+      if (we.timestamp) {
+        let parsed = parseTimestamp(we.timestamp);
+        if (!parsed) {
+          const rawDateMatch = we.timestamp.match(/(\w+\s+\d{1,2},\s*\d{4})/);
+          if (rawDateMatch) {
+            const tryParse = new Date(rawDateMatch[1]);
+            if (!isNaN(tryParse.getTime())) parsed = tryParse;
+          }
+        }
+        if (parsed) {
+          const y = parsed.getFullYear();
+          const m = String(parsed.getMonth() + 1).padStart(2, '0');
+          const d = String(parsed.getDate()).padStart(2, '0');
+          dateKey = `${y}-${m}-${d}`;
+        }
+      }
+
+      if (!dailyMap[dateKey]) {
+        dailyMap[dateKey] = {
+          totalSeconds: 0,
+          workDoneActions: 0,
+          itemsReadLines: 0,
+          codeChangedPlus: 0,
+          codeChangedMinus: 0,
+          agentUsage: 0,
+        };
+      }
+
+      const day = dailyMap[dateKey];
+      if (we.durationSeconds != null) {
+        day.totalSeconds += we.durationSeconds;
+      }
+      if (we.workDoneActions != null) {
+        day.workDoneActions += we.workDoneActions;
+      }
+      if (we.itemsReadLines != null) {
+        day.itemsReadLines += we.itemsReadLines;
+      }
+      if (we.codeChangedPlus != null) {
+        day.codeChangedPlus += we.codeChangedPlus;
+      }
+      if (we.codeChangedMinus != null) {
+        day.codeChangedMinus += we.codeChangedMinus;
+      }
+      if (we.agentUsage != null) {
+        day.agentUsage += we.agentUsage;
+      }
+    }
+  }
+
+  const sortedDates = Object.keys(dailyMap).sort(function(a, b) {
+    if (a === 'Unknown') return 1;
+    if (b === 'Unknown') return -1;
+    return a.localeCompare(b);
+  });
+  const rows: Record<string, any>[] = [];
+
+  for (const dateKey of sortedDates) {
+    const day = dailyMap[dateKey];
+
+    const hours = Math.floor(day.totalSeconds / 3600);
+    const mins = Math.floor((day.totalSeconds % 3600) / 60);
+    const secs = day.totalSeconds % 60;
+    const durationParts: string[] = [];
+    if (hours > 0) durationParts.push(`${hours} hour${hours !== 1 ? 's' : ''}`);
+    if (mins > 0) durationParts.push(`${mins} minute${mins !== 1 ? 's' : ''}`);
+    if (secs > 0 || durationParts.length === 0) durationParts.push(`${secs} second${secs !== 1 ? 's' : ''}`);
+    const durationHuman = durationParts.join(' ');
+
+    const durationMinutes = Math.round((day.totalSeconds / 60) * 100) / 100;
+
+    rows.push({
+      date: dateKey,
+      timeWorked: durationHuman,
+      durationMinutes: durationMinutes,
+      workDoneActions: day.workDoneActions,
+      itemsReadLines: day.itemsReadLines,
+      codeChangedPlus: day.codeChangedPlus,
+      codeChangedMinus: day.codeChangedMinus,
+      agentUsage: Math.round(day.agentUsage * 100) / 100,
+    });
+  }
+
+  const columns = [
+    { key: 'date', label: 'Date' },
+    { key: 'timeWorked', label: 'Time worked' },
+    { key: 'durationMinutes', label: 'Duration (minutes)' },
+    { key: 'workDoneActions', label: 'Work done (actions)' },
+    { key: 'itemsReadLines', label: 'Items read (lines)' },
+    { key: 'codeChangedPlus', label: 'Code added' },
+    { key: 'codeChangedMinus', label: 'Code removed' },
+    { key: 'agentUsage', label: 'Agent usage fee' },
+  ];
+  const filePath = path.join(outputDir, 'work-summary.csv');
+  writeCsv(columns, rows, filePath);
+  return filePath;
+}
+
 export function exportAgentUsageDetailsCsv(exports: ReplExport[], outputDir: string): string {
   const rows: Record<string, any>[] = [];
   
