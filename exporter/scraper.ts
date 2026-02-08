@@ -254,6 +254,48 @@ export class ReplitScraper {
     }
 
     try {
+      const domDebug = await page.evaluate(function() {
+        var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
+        var info = [] as any[];
+        for (var i = 0; i < containers.length && i < 20; i++) {
+          var c = containers[i];
+          var children = [] as any[];
+          for (var j = 0; j < c.children.length && j < 10; j++) {
+            var ch = c.children[j];
+            children.push({
+              tag: ch.tagName,
+              className: (ch.getAttribute('class') || '').substring(0, 120),
+              dataTestId: ch.getAttribute('data-testid') || '',
+              dataCy: ch.getAttribute('data-cy') || '',
+              dataEventType: ch.getAttribute('data-event-type') || '',
+              role: ch.getAttribute('role') || '',
+              childCount: ch.children.length,
+              textLength: (ch.textContent || '').length,
+              textPreview: (ch.textContent || '').substring(0, 80),
+              outerHTMLPreview: ch.outerHTML.substring(0, 300)
+            });
+          }
+          info.push({
+            tag: c.tagName,
+            className: (c.getAttribute('class') || '').substring(0, 120),
+            dataTestId: c.getAttribute('data-testid') || '',
+            role: c.getAttribute('role') || '',
+            childCount: c.children.length,
+            scrollHeight: c.scrollHeight,
+            clientHeight: c.clientHeight,
+            childSamples: children
+          });
+        }
+        return { containers: info, totalContainers: containers.length };
+      });
+      const debugPath = path.join(outputDir, 'dom-debug.json');
+      fs.writeFileSync(debugPath, JSON.stringify(domDebug, null, 2));
+      console.log(`  DOM debug saved: ${debugPath}`);
+    } catch (err) {
+      console.log('  Note: Could not save DOM debug info');
+    }
+
+    try {
       const storageState = await this.context.storageState();
       fs.writeFileSync(SESSION_FILE, JSON.stringify(storageState, null, 2));
     } catch (err) {
@@ -352,186 +394,126 @@ export class ReplitScraper {
       if (idx >= containers.length) return { clicked: false, debug: 'no container at index' };
       var el = containers[idx];
       var rawText = (el.textContent || '').trim();
-      if (rawText.indexOf('Agent Usage') < 0 && rawText.indexOf('agent usage') < 0) return { clicked: false, debug: 'no Agent Usage text found' };
+      if (rawText.indexOf('Agent Usage') < 0 && rawText.indexOf('agent usage') < 0) return { clicked: false, debug: 'no Agent Usage text in container' };
 
-      var clicked = 0;
       var debugInfo = [] as string[];
+      var allEls = el.querySelectorAll('*');
+      var bestTarget = null as any;
+      var bestSpecificity = 999;
 
-      var allChildEls = el.querySelectorAll('*');
-
-      var agentUsageEls = [] as any[];
-      for (var i = 0; i < allChildEls.length; i++) {
-        var child = allChildEls[i];
+      for (var i = 0; i < allEls.length; i++) {
+        var child = allEls[i];
         var childText = (child.textContent || '').trim();
-        if (childText.indexOf('Agent Usage') < 0 && childText.indexOf('agent usage') < 0) continue;
-        if (childText.length > 300) continue;
-        agentUsageEls.push(child);
+
+        var isAgentUsageText = false;
+        if (childText === 'Agent Usage') {
+          isAgentUsageText = true;
+        } else if (/^Agent\s+Usage\s*\$[\d.,]+$/.test(childText)) {
+          isAgentUsageText = true;
+        }
+
+        if (!isAgentUsageText) continue;
+        if (child.getAttribute('data-exporter-au-clicked') === '1') continue;
+
+        var specificity = childText.length;
+        if (specificity < bestSpecificity) {
+          bestSpecificity = specificity;
+          bestTarget = child;
+        }
       }
 
-      debugInfo.push('Found ' + agentUsageEls.length + ' Agent Usage elements');
+      if (bestTarget) {
+        var tag = bestTarget.tagName ? bestTarget.tagName.toLowerCase() : '';
+        var text = (bestTarget.textContent || '').trim();
+        debugInfo.push('Found Agent Usage element: tag=' + tag + ' text="' + text + '"');
 
-      for (var ai = 0; ai < agentUsageEls.length; ai++) {
-        var auEl = agentUsageEls[ai];
-        var auText = (auEl.textContent || '').trim();
-        var auTag = auEl.tagName ? auEl.tagName.toLowerCase() : '';
-        var auCls = auEl.getAttribute ? (auEl.getAttribute('class') || '') : '';
-        debugInfo.push('AU[' + ai + '] tag=' + auTag + ' text=' + auText.substring(0, 80) + ' cls=' + auCls.substring(0, 60) + ' children=' + auEl.children.length);
-
-        var candidate = null as any;
-
-        var walker = auEl as any;
-        for (var up = 0; up < 10; up++) {
-          if (!walker || walker === el) break;
-          var tag = walker.tagName ? walker.tagName.toLowerCase() : '';
-          var role = walker.getAttribute ? (walker.getAttribute('role') || '') : '';
-          var cls = walker.getAttribute ? (walker.getAttribute('class') || '') : '';
-          var hasAria = walker.getAttribute('aria-expanded') !== null;
-          var isClickable = (tag === 'button' || tag === 'summary' || tag === 'details' || role === 'button' ||
-            cls.indexOf('expandable') >= 0 || cls.indexOf('Expandable') >= 0 ||
-            cls.indexOf('chevron') >= 0 || cls.indexOf('Chevron') >= 0 ||
-            cls.indexOf('collapsible') >= 0 || cls.indexOf('Collapsible') >= 0 ||
-            hasAria || (walker.style && walker.style.cursor === 'pointer'));
-          if (isClickable && walker.getAttribute('data-exporter-au-clicked') !== '1') {
-            var cExp = walker.getAttribute('aria-expanded');
-            if (cExp !== 'true') {
-              candidate = walker;
-              debugInfo.push('  Found clickable via upwalk: tag=' + tag + ' aria=' + cExp);
-              break;
-            }
-          }
-          walker = walker.parentElement;
+        var clickTarget = bestTarget;
+        var rect = clickTarget.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          clickTarget.setAttribute('data-exporter-au-clicked', '1');
+          if (clickTarget['click']) clickTarget['click']();
+          debugInfo.push('CLICKED "' + text + '"');
+          return { clicked: true, debug: debugInfo.join('; ') };
         }
 
-        if (!candidate && auEl.parentElement) {
-          var parentEl = auEl.parentElement;
-          var parentTag = parentEl.tagName ? parentEl.tagName.toLowerCase() : '';
-          var parentCls = parentEl.getAttribute ? (parentEl.getAttribute('class') || '') : '';
-          if (parentTag === 'button' || parentTag === 'summary' ||
-              (parentEl.getAttribute && parentEl.getAttribute('role') === 'button') ||
-              parentCls.indexOf('expandable') >= 0 || parentCls.indexOf('Expandable') >= 0 ||
-              (parentEl.style && parentEl.style.cursor === 'pointer')) {
-            if (parentEl.getAttribute('data-exporter-au-clicked') !== '1') {
-              candidate = parentEl;
-              debugInfo.push('  Found clickable parent: tag=' + parentTag);
-            }
-          }
-        }
-
-        if (!candidate && auEl.parentElement) {
-          var siblings = auEl.parentElement.children;
+        var parent = bestTarget.parentElement;
+        if (parent && parent !== el) {
+          var siblings = parent.children;
           for (var si = 0; si < siblings.length; si++) {
             var sib = siblings[si];
-            if (sib === auEl) continue;
-            var sTag = sib.tagName ? sib.tagName.toLowerCase() : '';
-            var sRole = sib.getAttribute ? (sib.getAttribute('role') || '') : '';
-            var sCls = sib.getAttribute ? (sib.getAttribute('class') || '') : '';
-            if ((sTag === 'button' || sRole === 'button' || sTag === 'svg' ||
-                sCls.indexOf('expandable') >= 0 || sCls.indexOf('Expandable') >= 0 ||
-                sCls.indexOf('chevron') >= 0 || sCls.indexOf('Chevron') >= 0 ||
-                sCls.indexOf('icon') >= 0 || sCls.indexOf('Icon') >= 0 ||
-                sCls.indexOf('arrow') >= 0 || sCls.indexOf('Arrow') >= 0 ||
-                sib.getAttribute('aria-expanded') !== null) &&
-                sib.getAttribute('data-exporter-au-clicked') !== '1') {
-              var sExp = sib.getAttribute('aria-expanded');
-              if (sExp !== 'true') {
-                candidate = sib;
-                debugInfo.push('  Found clickable sibling: tag=' + sTag + ' cls=' + sCls.substring(0, 40));
-                break;
+            if (sib === bestTarget) continue;
+            var sibTag = sib.tagName ? sib.tagName.toLowerCase() : '';
+            var sibClass = sib.getAttribute('class') || '';
+            var isSvg = sibTag === 'svg' || sibClass.indexOf('chevron') >= 0 || sibClass.indexOf('icon') >= 0 || sibClass.indexOf('arrow') >= 0;
+            var isBtn = sibTag === 'button' || sib.getAttribute('role') === 'button' || sib.getAttribute('aria-expanded') !== null;
+            if (isSvg || isBtn) {
+              var sibRect = sib.getBoundingClientRect();
+              if (sibRect.width > 0 && sibRect.height > 0) {
+                sib.setAttribute('data-exporter-au-clicked', '1');
+                if (sib['click']) sib['click']();
+                debugInfo.push('CLICKED sibling: tag=' + sibTag + ' class=' + sibClass.substring(0, 60));
+                return { clicked: true, debug: debugInfo.join('; ') };
               }
             }
           }
-        }
 
-        if (!candidate) {
-          var childBtns = auEl.querySelectorAll('button, [role="button"], [aria-expanded], svg, [class*="chevron"], [class*="Chevron"], [class*="icon"], [class*="arrow"]');
-          for (var cb = 0; cb < childBtns.length; cb++) {
-            if (childBtns[cb].getAttribute('data-exporter-au-clicked') !== '1') {
-              var cbExp = childBtns[cb].getAttribute('aria-expanded');
-              if (cbExp !== 'true') {
-                candidate = childBtns[cb];
-                var cbTag = childBtns[cb].tagName ? childBtns[cb].tagName.toLowerCase() : '';
-                debugInfo.push('  Found clickable child: tag=' + cbTag);
-                break;
+          var pRect = parent.getBoundingClientRect();
+          if (pRect.width > 0 && pRect.height > 0) {
+            var pText = (parent.textContent || '').trim();
+            if (pText.indexOf('Worked for') < 0 && pText.length < 200) {
+              parent.setAttribute('data-exporter-au-clicked', '1');
+              if (parent['click']) parent['click']();
+              var pTag = parent.tagName ? parent.tagName.toLowerCase() : '';
+              debugInfo.push('CLICKED parent: tag=' + pTag);
+              return { clicked: true, debug: debugInfo.join('; ') };
+            } else {
+              debugInfo.push('Skipped parent click - contains "Worked for" or too large');
+            }
+          }
+
+          var grandparent = parent.parentElement;
+          if (grandparent && grandparent !== el) {
+            var gpChildren = grandparent.children;
+            for (var gi = 0; gi < gpChildren.length; gi++) {
+              var gpChild = gpChildren[gi];
+              if (gpChild === parent) continue;
+              var gpTag = gpChild.tagName ? gpChild.tagName.toLowerCase() : '';
+              var gpClass = gpChild.getAttribute('class') || '';
+              var gpText = (gpChild.textContent || '').trim();
+              if (gpText.indexOf('Worked for') >= 0) continue;
+              var gpIsSvg = gpTag === 'svg' || gpClass.indexOf('chevron') >= 0 || gpClass.indexOf('icon') >= 0;
+              var gpIsBtn = gpTag === 'button' || gpChild.getAttribute('role') === 'button' || gpChild.getAttribute('aria-expanded') !== null;
+              if (gpIsSvg || gpIsBtn) {
+                var gpRect = gpChild.getBoundingClientRect();
+                if (gpRect.width > 0 && gpRect.height > 0) {
+                  gpChild.setAttribute('data-exporter-au-clicked', '1');
+                  if (gpChild['click']) gpChild['click']();
+                  debugInfo.push('CLICKED grandparent sibling: tag=' + gpTag);
+                  return { clicked: true, debug: debugInfo.join('; ') };
+                }
               }
             }
-          }
-        }
 
-        if (!candidate && auEl.nextElementSibling) {
-          var nextSib = auEl.nextElementSibling;
-          var nsTag = nextSib.tagName ? nextSib.tagName.toLowerCase() : '';
-          if (nsTag === 'button' || nsTag === 'svg' || (nextSib.getAttribute && nextSib.getAttribute('role') === 'button')) {
-            if (nextSib.getAttribute('data-exporter-au-clicked') !== '1') {
-              candidate = nextSib;
-              debugInfo.push('  Found clickable nextSib: tag=' + nsTag);
-            }
-          } else {
-            var nsBtns = nextSib.querySelectorAll('button, [role="button"], [aria-expanded], svg');
-            for (var nb = 0; nb < nsBtns.length; nb++) {
-              if (nsBtns[nb].getAttribute('data-exporter-au-clicked') !== '1') {
-                candidate = nsBtns[nb];
-                debugInfo.push('  Found clickable in nextSib child');
-                break;
-              }
+            var gpRect2 = grandparent.getBoundingClientRect();
+            var gpText2 = (grandparent.textContent || '').trim();
+            if (gpRect2.width > 0 && gpRect2.height > 0 && gpText2.indexOf('Worked for') < 0 && gpText2.length < 200) {
+              grandparent.setAttribute('data-exporter-au-clicked', '1');
+              if (grandparent['click']) grandparent['click']();
+              debugInfo.push('CLICKED grandparent');
+              return { clicked: true, debug: debugInfo.join('; ') };
             }
           }
         }
 
-        if (!candidate) {
-          var closestClickable = auEl.closest('button, [role="button"], summary, details, [aria-expanded]');
-          if (closestClickable && closestClickable !== el && closestClickable.getAttribute('data-exporter-au-clicked') !== '1') {
-            var ccExp = closestClickable.getAttribute('aria-expanded');
-            if (ccExp !== 'true') {
-              candidate = closestClickable;
-              debugInfo.push('  Found via closest(): tag=' + (closestClickable.tagName || '').toLowerCase());
-            }
-          }
-        }
-
-        if (candidate) {
-          var cRect = candidate.getBoundingClientRect();
-          if (cRect.width > 0 && cRect.height > 0) {
-            candidate.setAttribute('data-exporter-au-clicked', '1');
-            if (candidate['click']) candidate['click']();
-            clicked++;
-            debugInfo.push('  CLICKED!');
-          } else {
-            debugInfo.push('  Candidate not visible (w=' + cRect.width + ' h=' + cRect.height + ')');
-          }
-        } else {
-          debugInfo.push('  No clickable candidate found');
-        }
+        debugInfo.push('Agent Usage element found but not clickable');
+      } else {
+        debugInfo.push('No element with exact "Agent Usage" text found');
       }
 
-      if (clicked === 0) {
-        var endOfRunBtns = el.querySelectorAll(
-          '[class*="EndOfRunSummary"] button, [class*="EndOfRunSummary"] [role="button"], ' +
-          '[class*="EndOfRunSummary"] [aria-expanded], [class*="endOfRun"] button, ' +
-          '[class*="EndOfRunSummary"] [class*="chevron"], [class*="EndOfRunSummary"] svg'
-        );
-        debugInfo.push('Fallback: found ' + endOfRunBtns.length + ' EndOfRun buttons');
-        for (var j = 0; j < endOfRunBtns.length; j++) {
-          var ch = endOfRunBtns[j];
-          if (ch.getAttribute('data-exporter-au-clicked') === '1') continue;
-          var chExp = ch.getAttribute('aria-expanded');
-          if (chExp === 'true') continue;
-          var chText = (ch.textContent || '').trim();
-          if (chText.indexOf('$') >= 0 || chText.indexOf('Agent') >= 0 || chText.indexOf('Usage') >= 0 || chText.length < 5) {
-            var chRect = ch.getBoundingClientRect();
-            if (chRect.width > 0 && chRect.height > 0) {
-              ch.setAttribute('data-exporter-au-clicked', '1');
-              if (ch['click']) ch['click']();
-              clicked++;
-              debugInfo.push('  Fallback CLICKED: text=' + chText.substring(0, 40));
-            }
-          }
-        }
-      }
-
-      return { clicked: clicked > 0, debug: debugInfo.join('\n') };
+      return { clicked: false, debug: debugInfo.join('; ') };
     }, index);
     if (result.debug && result.debug.length > 0) {
-      console.log('  [Agent Usage expand] ' + (result.clicked ? 'EXPANDED' : 'NOT expanded') + ':\n    ' + result.debug.replace(/\n/g, '\n    '));
+      console.log('  [Agent Usage] ' + (result.clicked ? 'EXPANDED' : 'NOT expanded') + ': ' + result.debug);
     }
     return result.clicked;
   }
@@ -656,18 +638,28 @@ export class ReplitScraper {
 
         var chargeDetails = [] as any[];
         var chargeDebug = [] as string[];
-        var searchRoot = endOfRunRoot || el;
         var agentUsageHeading = null as any;
-        var allChildEls = searchRoot.querySelectorAll('*');
+        var allChildEls = el.querySelectorAll('*');
         for (var hi = 0; hi < allChildEls.length; hi++) {
           var hEl = allChildEls[hi];
           var hText = (hEl.textContent || '').trim();
-          if ((hText.indexOf('Agent Usage') >= 0 || hText.indexOf('agent usage') >= 0) && hText.length < 80) {
+          if (hText === 'Agent Usage') {
             agentUsageHeading = hEl;
+            break;
+          }
+        }
+        if (!agentUsageHeading) {
+          for (var hi2 = 0; hi2 < allChildEls.length; hi2++) {
+            var hEl2 = allChildEls[hi2];
+            var hText2 = (hEl2.textContent || '').trim();
+            if (/^Agent\s*Usage/i.test(hText2) && hText2.length < 50) {
+              agentUsageHeading = hEl2;
+              break;
+            }
           }
         }
 
-        chargeDebug.push('agentUsageHeading=' + (agentUsageHeading ? 'found' : 'null'));
+        chargeDebug.push('agentUsageHeading=' + (agentUsageHeading ? 'found(tag=' + (agentUsageHeading.tagName || '').toLowerCase() + ',text=' + (agentUsageHeading.textContent || '').trim().substring(0, 40) + ')' : 'null'));
 
         if (agentUsageHeading) {
           var labelCandidates = [] as any[];
@@ -1081,14 +1073,36 @@ export class ReplitScraper {
       if (data.timestamp) lastTimestamp = data.timestamp;
 
       if (data.entryType === 'work') {
-        // 3c: For work entries, now expand Agent Usage within this element
+        var savedWorkData = {
+          timestamp: data.timestamp,
+          timeWorked: data.timeWorked,
+          durationSeconds: data.durationSeconds,
+          workDoneActions: data.workDoneActions,
+          itemsReadLines: data.itemsReadLines,
+          codeChangedPlus: data.codeChangedPlus,
+          codeChangedMinus: data.codeChangedMinus,
+          agentUsage: data.agentUsage,
+        };
+
         var didExpandAU = await this.expandAgentUsageInElement(page, i);
         if (didExpandAU) {
           agentUsageExpandedCount++;
-          await page.waitForTimeout(800);
-          // Re-extract after Agent Usage expansion to get charge details
-          data = await this.extractElementData(page, i, lastTimestamp);
-          if (!data) continue;
+          await page.waitForTimeout(1000);
+          var auData = await this.extractElementData(page, i, lastTimestamp);
+          if (auData && auData.chargeDetails && auData.chargeDetails.length > 0) {
+            data.chargeDetails = auData.chargeDetails;
+          }
+          if (auData && auData.chargeDebug) {
+            data.chargeDebug = auData.chargeDebug;
+          }
+          data.timestamp = savedWorkData.timestamp;
+          data.timeWorked = savedWorkData.timeWorked;
+          data.durationSeconds = savedWorkData.durationSeconds;
+          data.workDoneActions = savedWorkData.workDoneActions;
+          data.itemsReadLines = savedWorkData.itemsReadLines;
+          data.codeChangedPlus = savedWorkData.codeChangedPlus;
+          data.codeChangedMinus = savedWorkData.codeChangedMinus;
+          data.agentUsage = savedWorkData.agentUsage;
         }
 
         if (data.chargeDebug) {
