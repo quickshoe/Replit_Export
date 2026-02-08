@@ -628,97 +628,364 @@ export class ReplitScraper {
   }
 
   private async clickOneRelativeTimestamp(page: Page): Promise<boolean> {
-    // First check: are timestamps already absolute? (e.g. from a previous session)
-    var preCheck = await page.evaluate(function() {
-      var timeEls = document.querySelectorAll('time, [class*="time" i], [class*="date" i], [class*="ago" i], [class*="Timestamp"]');
-      var relativeCount = 0;
-      var absoluteCount = 0;
-      for (var i = 0; i < timeEls.length; i++) {
-        var text = (timeEls[i].textContent || '').trim();
-        if (/^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i.test(text) || /^just\s+now$/i.test(text)) {
-          relativeCount++;
-        } else if (text.length > 3) {
-          absoluteCount++;
-        }
+    // Commit-entry-based detection: find a commit descriptor element, then check
+    // the adjacent timestamp line below it to determine if it's relative or absolute.
+    // If already absolute, no click needed. If relative, click to convert all.
+    var detection = await page.evaluate(function() {
+      var relativePattern = /^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i;
+      var justNowPattern = /^just\s+now$/i;
+      // Absolute patterns: time-of-day ("3:45 PM"), date ("Jan 2, 2024"), or combined
+      var absoluteTimePattern = /\d{1,2}:\d{2}\s*(?:am|pm)/i;
+      var absoluteDatePattern = /(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d{1,2},?\s+\d{4}/i;
+      var absoluteNumericDatePattern = /\d{1,2}\/\d{1,2}\/\d{2,4}/;
+
+      function isAbsolute(text: string): boolean {
+        return absoluteTimePattern.test(text) || absoluteDatePattern.test(text) || absoluteNumericDatePattern.test(text);
       }
-      return { relativeCount: relativeCount, absoluteCount: absoluteCount };
-    });
+      function isRelative(text: string): boolean {
+        return relativePattern.test(text) || justNowPattern.test(text);
+      }
 
-    if (preCheck.relativeCount === 0 && preCheck.absoluteCount > 0) {
-      console.log(`  Timestamps already absolute (${preCheck.absoluteCount} found). No click needed.`);
-      return true;
-    }
+      // Step 1: Find commit container elements (not message sub-elements)
+      // Use container-level selectors first
+      var commitContainers = document.querySelectorAll(
+        '[class*="CommitList"] li, [data-testid*="commit"], ' +
+        '[class*="commit-entry" i], [class*="CommitEntry"]'
+      );
 
-    if (preCheck.relativeCount === 0 && preCheck.absoluteCount === 0) {
-      console.log('  No timestamp elements found in Git tab.');
-      return false;
-    }
-
-    console.log(`  Found ${preCheck.relativeCount} relative, ${preCheck.absoluteCount} absolute timestamps. Clicking to convert...`);
-
-    var clicked = await page.evaluate(function() {
-      var timeEls = document.querySelectorAll('time, [class*="time" i], [class*="date" i], [class*="ago" i], [class*="Timestamp"]');
-      for (var i = 0; i < timeEls.length; i++) {
-        var el = timeEls[i] as HTMLElement;
-        var text = (el.textContent || '').trim();
-        if (/^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i.test(text) || /^just\s+now$/i.test(text)) {
-          var rect = el.getBoundingClientRect();
-          if (rect.width > 0 && rect.height > 0) {
-            el.scrollIntoView({ block: 'center', behavior: 'instant' });
-            el.click();
-            return text;
+      // If no container-level matches, try broader commit class and resolve upward
+      if (commitContainers.length === 0) {
+        // Find message elements and resolve to their commit container parent
+        var msgEls = document.querySelectorAll('[class*="commit" i] [class*="message" i]');
+        var containers: Element[] = [];
+        var seenContainers: Record<string, boolean> = {};
+        for (var m = 0; m < msgEls.length; m++) {
+          // Walk up to find the commit container
+          var parent: Element | null = msgEls[m];
+          while (parent) {
+            var cls = (parent.getAttribute('class') || '').toLowerCase();
+            if (cls.indexOf('commit') >= 0 && parent !== msgEls[m]) {
+              var key = parent.tagName + '_' + (parent.getAttribute('class') || '').substring(0, 50);
+              if (!seenContainers[key]) {
+                seenContainers[key] = true;
+                containers.push(parent);
+              }
+              break;
+            }
+            parent = parent.parentElement;
           }
         }
-      }
-      return null;
-    });
-
-    if (!clicked) return false;
-
-    console.log(`  Clicked relative timestamp: "${clicked}"`);
-    await page.waitForTimeout(1500);
-
-    var verified = await page.evaluate(function() {
-      var timeEls = document.querySelectorAll('time, [class*="time" i], [class*="date" i], [class*="ago" i], [class*="Timestamp"]');
-      var relativeCount = 0;
-      var absoluteCount = 0;
-      for (var i = 0; i < timeEls.length; i++) {
-        var text = (timeEls[i].textContent || '').trim();
-        if (/^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i.test(text) || /^just\s+now$/i.test(text)) {
-          relativeCount++;
-        } else if (text.length > 3) {
-          absoluteCount++;
+        if (containers.length === 0) {
+          // Last resort: all commit-class elements
+          var allCommit = document.querySelectorAll('[class*="commit" i]');
+          for (var ac = 0; ac < allCommit.length; ac++) {
+            containers.push(allCommit[ac]);
+          }
         }
+        // Convert to a NodeList-like structure for uniform iteration
+        commitContainers = containers as any;
       }
-      return { relativeCount: relativeCount, absoluteCount: absoluteCount };
-    });
 
-    console.log(`  After click: ${verified.absoluteCount} absolute, ${verified.relativeCount} relative timestamps`);
+      // Step 2: Scan each commit container for description + timestamp
+      for (var i = 0; i < commitContainers.length; i++) {
+        var commitEl = commitContainers[i];
 
-    if (verified.relativeCount > 0 && verified.absoluteCount === 0) {
-      console.log('  WARNING: One-click conversion may have failed. Trying parent element click...');
-      var retryClicked = await page.evaluate(function() {
-        var timeEls = document.querySelectorAll('time, [class*="time" i], [class*="date" i], [class*="ago" i], [class*="Timestamp"]');
-        for (var i = 0; i < timeEls.length; i++) {
-          var el = timeEls[i] as HTMLElement;
-          var text = (el.textContent || '').trim();
-          if (/^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i.test(text) || /^just\s+now$/i.test(text)) {
-            var parent = el.parentElement;
-            if (parent) {
-              parent.scrollIntoView({ block: 'center', behavior: 'instant' });
-              parent.click();
-              return true;
+        // Verify this entry has a description (commit message)
+        var hasDescription = false;
+        var msgEl = commitEl.querySelector(
+          '[class*="message" i], [class*="description" i], ' +
+          '[class*="summary" i], [class*="title" i]'
+        );
+        if (msgEl && (msgEl.textContent || '').trim().length > 5) {
+          hasDescription = true;
+        }
+        if (!hasDescription) {
+          var children = commitEl.children;
+          for (var c = 0; c < children.length; c++) {
+            var childText = (children[c].textContent || '').trim();
+            if (childText.length > 5 && childText.length < 500 &&
+                !isRelative(childText) && !isAbsolute(childText)) {
+              hasDescription = true;
+              break;
             }
           }
         }
+        if (!hasDescription) continue;
+
+        // Look for the timestamp line within this commit container
+        var timeEl = commitEl.querySelector('time, [class*="time" i], [class*="date" i], [class*="ago" i], [class*="Timestamp"]');
+        if (!timeEl) {
+          // Also check sibling/next elements of the commit container
+          var nextSib = commitEl.nextElementSibling;
+          if (nextSib) {
+            var sibText = (nextSib.textContent || '').trim();
+            if (isRelative(sibText)) {
+              return { status: 'relative', text: sibText, index: i, useSibling: true };
+            }
+            if (isAbsolute(sibText)) {
+              return { status: 'absolute', text: sibText, index: i, useSibling: false };
+            }
+          }
+          continue;
+        }
+
+        var timeText = (timeEl.textContent || '').trim();
+
+        // Classify the timestamp line
+        if (isRelative(timeText)) {
+          return { status: 'relative', text: timeText, index: i, useSibling: false };
+        }
+        if (isAbsolute(timeText)) {
+          return { status: 'absolute', text: timeText, index: i, useSibling: false };
+        }
+
+        // Check datetime attribute as fallback for absolute
+        var dtAttr = timeEl.getAttribute('datetime') || '';
+        if (dtAttr) {
+          return { status: 'absolute', text: dtAttr, index: i, useSibling: false };
+        }
+
+        // Neither relative nor absolute — keep scanning next commit
+      }
+
+      return { status: 'none', text: '', index: -1, useSibling: false };
+    });
+
+    if (detection.status === 'absolute') {
+      console.log(`  Timestamps already absolute ("${detection.text}" at commit ${detection.index}). No click needed.`);
+      return true;
+    }
+
+    if (detection.status === 'none') {
+      console.log('  No commit entries with recognizable timestamps found in Git tab.');
+      return false;
+    }
+
+    // Status is 'relative' — click it to convert all timestamps
+    console.log(`  Found relative timestamp "${detection.text}" at commit ${detection.index}. Clicking to convert...`);
+
+    var clicked = await page.evaluate(function(args) {
+      var targetIndex = args.targetIndex;
+      var useSibling = args.useSibling;
+
+      var commitContainers = document.querySelectorAll(
+        '[class*="CommitList"] li, [data-testid*="commit"], ' +
+        '[class*="commit-entry" i], [class*="CommitEntry"]'
+      );
+      var containers: Element[] = [];
+      if (commitContainers.length === 0) {
+        var msgEls = document.querySelectorAll('[class*="commit" i] [class*="message" i]');
+        var seenC: Record<string, boolean> = {};
+        for (var m = 0; m < msgEls.length; m++) {
+          var p: Element | null = msgEls[m];
+          while (p) {
+            var cls = (p.getAttribute('class') || '').toLowerCase();
+            if (cls.indexOf('commit') >= 0 && p !== msgEls[m]) {
+              var k = p.tagName + '_' + (p.getAttribute('class') || '').substring(0, 50);
+              if (!seenC[k]) { seenC[k] = true; containers.push(p); }
+              break;
+            }
+            p = p.parentElement;
+          }
+        }
+        if (containers.length === 0) {
+          var allC = document.querySelectorAll('[class*="commit" i]');
+          for (var ac = 0; ac < allC.length; ac++) containers.push(allC[ac]);
+        }
+      } else {
+        for (var i = 0; i < commitContainers.length; i++) containers.push(commitContainers[i]);
+      }
+
+      if (targetIndex < 0 || targetIndex >= containers.length) return null;
+      var commitEl = containers[targetIndex];
+
+      if (useSibling) {
+        var sib = commitEl.nextElementSibling as HTMLElement;
+        if (sib) {
+          sib.scrollIntoView({ block: 'center', behavior: 'instant' });
+          sib.click();
+          return 'clicked-sibling';
+        }
+      }
+
+      var timeEl = commitEl.querySelector('time, [class*="time" i], [class*="date" i], [class*="ago" i], [class*="Timestamp"]') as HTMLElement;
+      if (timeEl) {
+        timeEl.scrollIntoView({ block: 'center', behavior: 'instant' });
+        timeEl.click();
+        return 'clicked-time';
+      }
+
+      (commitEl as HTMLElement).scrollIntoView({ block: 'center', behavior: 'instant' });
+      (commitEl as HTMLElement).click();
+      return 'clicked-container';
+    }, { targetIndex: detection.index, useSibling: detection.useSibling });
+
+    if (!clicked) {
+      console.log('  Could not click the relative timestamp element.');
+      return false;
+    }
+
+    console.log(`  Click executed (${clicked}). Waiting for conversion...`);
+    await page.waitForTimeout(1500);
+
+    // Verify: re-check the same commit entry's timestamp line
+    var verified = await page.evaluate(function(targetIndex) {
+      var relativePattern = /^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i;
+      var justNowPattern = /^just\s+now$/i;
+      var absoluteTimePattern = /\d{1,2}:\d{2}\s*(?:am|pm)/i;
+      var absoluteDatePattern = /(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d{1,2},?\s+\d{4}/i;
+      var absoluteNumericDatePattern = /\d{1,2}\/\d{1,2}\/\d{2,4}/;
+
+      function isAbsoluteV(text: string): boolean {
+        return absoluteTimePattern.test(text) || absoluteDatePattern.test(text) || absoluteNumericDatePattern.test(text);
+      }
+
+      var commitContainers = document.querySelectorAll(
+        '[class*="CommitList"] li, [data-testid*="commit"], ' +
+        '[class*="commit-entry" i], [class*="CommitEntry"]'
+      );
+      var containers: Element[] = [];
+      if (commitContainers.length === 0) {
+        var msgEls = document.querySelectorAll('[class*="commit" i] [class*="message" i]');
+        var seenC: Record<string, boolean> = {};
+        for (var m = 0; m < msgEls.length; m++) {
+          var p: Element | null = msgEls[m];
+          while (p) {
+            var cls = (p.getAttribute('class') || '').toLowerCase();
+            if (cls.indexOf('commit') >= 0 && p !== msgEls[m]) {
+              var k = p.tagName + '_' + (p.getAttribute('class') || '').substring(0, 50);
+              if (!seenC[k]) { seenC[k] = true; containers.push(p); }
+              break;
+            }
+            p = p.parentElement;
+          }
+        }
+        if (containers.length === 0) {
+          var allC = document.querySelectorAll('[class*="commit" i]');
+          for (var ac = 0; ac < allC.length; ac++) containers.push(allC[ac]);
+        }
+      } else {
+        for (var i = 0; i < commitContainers.length; i++) containers.push(commitContainers[i]);
+      }
+
+      if (targetIndex >= 0 && targetIndex < containers.length) {
+        var commitEl = containers[targetIndex];
+        var timeEl = commitEl.querySelector('time, [class*="time" i], [class*="date" i], [class*="ago" i], [class*="Timestamp"]');
+        if (timeEl) {
+          var text = (timeEl.textContent || '').trim();
+          if (isAbsoluteV(text)) {
+            return { converted: true, text: text };
+          }
+          if (relativePattern.test(text) || justNowPattern.test(text)) {
+            return { converted: false, text: text };
+          }
+          var dtAttr = timeEl.getAttribute('datetime') || '';
+          if (dtAttr) {
+            return { converted: true, text: dtAttr };
+          }
+        }
+        // Also check sibling
+        var nextSib = commitEl.nextElementSibling;
+        if (nextSib) {
+          var sibText = (nextSib.textContent || '').trim();
+          if (isAbsoluteV(sibText)) {
+            return { converted: true, text: sibText };
+          }
+        }
+      }
+      return { converted: false, text: '' };
+    }, detection.index);
+
+    if (verified.converted) {
+      console.log(`  Conversion verified: "${verified.text}"`);
+      return true;
+    }
+
+    // Retry: try clicking the parent element of the timestamp
+    console.log(`  Conversion not confirmed ("${verified.text}"). Retrying with parent click...`);
+    var retryClicked = await page.evaluate(function(targetIndex) {
+      var commitContainers = document.querySelectorAll(
+        '[class*="CommitList"] li, [data-testid*="commit"], ' +
+        '[class*="commit-entry" i], [class*="CommitEntry"]'
+      );
+      var containers: Element[] = [];
+      if (commitContainers.length === 0) {
+        var msgEls = document.querySelectorAll('[class*="commit" i] [class*="message" i]');
+        var seenC: Record<string, boolean> = {};
+        for (var m = 0; m < msgEls.length; m++) {
+          var p: Element | null = msgEls[m];
+          while (p) {
+            var cls = (p.getAttribute('class') || '').toLowerCase();
+            if (cls.indexOf('commit') >= 0 && p !== msgEls[m]) {
+              var k = p.tagName + '_' + (p.getAttribute('class') || '').substring(0, 50);
+              if (!seenC[k]) { seenC[k] = true; containers.push(p); }
+              break;
+            }
+            p = p.parentElement;
+          }
+        }
+        if (containers.length === 0) {
+          var allC = document.querySelectorAll('[class*="commit" i]');
+          for (var ac = 0; ac < allC.length; ac++) containers.push(allC[ac]);
+        }
+      } else {
+        for (var i = 0; i < commitContainers.length; i++) containers.push(commitContainers[i]);
+      }
+
+      if (targetIndex >= 0 && targetIndex < containers.length) {
+        var commitEl = containers[targetIndex];
+        var timeEl = commitEl.querySelector('time, [class*="time" i], [class*="date" i], [class*="ago" i], [class*="Timestamp"]') as HTMLElement;
+        if (timeEl && timeEl.parentElement) {
+          timeEl.parentElement.scrollIntoView({ block: 'center', behavior: 'instant' });
+          timeEl.parentElement.click();
+          return true;
+        }
+      }
+      return false;
+    }, detection.index);
+
+    if (retryClicked) {
+      await page.waitForTimeout(1500);
+
+      // Final verification
+      var finalCheck = await page.evaluate(function(targetIndex) {
+        var absoluteTimePattern = /\d{1,2}:\d{2}\s*(?:am|pm)/i;
+        var absoluteDatePattern = /(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d{1,2},?\s+\d{4}/i;
+        var absoluteNumericDatePattern = /\d{1,2}\/\d{1,2}\/\d{2,4}/;
+
+        var commitContainers = document.querySelectorAll(
+          '[class*="CommitList"] li, [data-testid*="commit"], ' +
+          '[class*="commit-entry" i], [class*="CommitEntry"]'
+        );
+        var containers: Element[] = [];
+        if (commitContainers.length === 0) {
+          var allC = document.querySelectorAll('[class*="commit" i]');
+          for (var ac = 0; ac < allC.length; ac++) containers.push(allC[ac]);
+        } else {
+          for (var i = 0; i < commitContainers.length; i++) containers.push(commitContainers[i]);
+        }
+
+        if (targetIndex >= 0 && targetIndex < containers.length) {
+          var commitEl = containers[targetIndex];
+          var timeEl = commitEl.querySelector('time, [class*="time" i], [class*="date" i], [class*="ago" i], [class*="Timestamp"]');
+          if (timeEl) {
+            var text = (timeEl.textContent || '').trim();
+            if (absoluteTimePattern.test(text) || absoluteDatePattern.test(text) || absoluteNumericDatePattern.test(text)) return true;
+            var dtAttr = timeEl.getAttribute('datetime') || '';
+            if (dtAttr) return true;
+          }
+        }
         return false;
-      });
-      if (retryClicked) {
-        await page.waitForTimeout(1500);
+      }, detection.index);
+
+      if (finalCheck) {
+        console.log('  Conversion verified on retry.');
+        return true;
       }
     }
 
-    return verified.absoluteCount > 0;
+    console.log('  WARNING: Could not verify timestamp conversion. Proceeding anyway.');
+    return false;
   }
 
   private async navigateToChatPanel(page: Page, replUrl: string): Promise<void> {
