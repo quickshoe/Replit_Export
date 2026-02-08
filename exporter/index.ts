@@ -87,23 +87,44 @@ async function main() {
   const runTimestamp = formatRunTimestamp(runStart);
 
   const scraper = new ReplitScraper();
-  if (options.verbose) {
+  const isVerbose = options.verbose;
+  if (isVerbose) {
     scraper.setVerbose(true);
   }
   
   try {
-    await scraper.init();
+    // Phase 1: Try headless with saved session first
+    // If verbose, always stay headed so user can watch operations
+    if (isVerbose) {
+      console.log('Verbose mode: browser will remain visible throughout.');
+      await scraper.init({ headless: false });
+    } else {
+      await scraper.init({ headless: true });
+    }
 
     const isLoggedIn = await scraper.checkLoggedIn();
     if (!isLoggedIn) {
-      console.log('Not logged in. Opening login page...');
+      if (!isVerbose) {
+        // Need to switch to headed mode for login
+        console.log('Session expired or missing. Opening browser for login...');
+        await scraper.close();
+        await scraper.init({ headless: false });
+      } else {
+        console.log('Not logged in. Please log in in the browser window...');
+      }
       await scraper.waitForLogin();
+
+      // After login, switch back to headless for extraction (unless verbose)
+      if (!isVerbose) {
+        await scraper.reinitHeadless();
+      }
     } else {
       console.log('Already logged in (using saved session).');
     }
 
     let urls: string[] = options.urls || [];
     if (urls.length === 0) {
+      // Need to collect URLs - if headless, briefly note it
       urls = await promptForUrls();
     }
 
@@ -118,7 +139,8 @@ async function main() {
       urls = [urls[0]];
     }
 
-    console.log(`\nProcessing ${urls.length} repl(s)...\n`);
+    const mode = scraper.isHeadless() ? 'headless' : 'headed';
+    console.log(`\nProcessing ${urls.length} repl(s) in ${mode} mode...\n`);
 
     const exports: ReplExport[] = [];
 

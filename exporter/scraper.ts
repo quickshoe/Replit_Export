@@ -24,13 +24,16 @@ export class ReplitScraper {
   private browser: Browser | null = null;
   private context: BrowserContext | null = null;
   private verbose: boolean = false;
+  private headless: boolean = false;
 
   setVerbose(v: boolean): void { this.verbose = v; }
 
-  async init(): Promise<void> {
-    console.log('Launching browser...');
+  async init(options?: { headless?: boolean }): Promise<void> {
+    this.headless = options?.headless ?? false;
+    const mode = this.headless ? 'headless' : 'headed';
+    console.log(`Launching browser (${mode})...`);
     this.browser = await chromium.launch({
-      headless: false,
+      headless: this.headless,
     });
 
     if (fs.existsSync(SESSION_FILE)) {
@@ -46,6 +49,17 @@ export class ReplitScraper {
     } else {
       this.context = await this.browser.newContext();
     }
+  }
+
+  async reinitHeadless(): Promise<void> {
+    if (this.headless) return;
+    console.log('Switching to headless mode for extraction...');
+    await this.close();
+    await this.init({ headless: true });
+  }
+
+  isHeadless(): boolean {
+    return this.headless;
   }
 
   async waitForLogin(page?: Page): Promise<void> {
