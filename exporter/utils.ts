@@ -2,6 +2,19 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { ReplExport, ChatMessage } from './types';
 
+const BOILERPLATE_PATTERNS = [
+  /^saved progress at the end of the loop$/i,
+  /^transitioned from \w+ to \w+ mode$/i,
+];
+
+function isBoilerplateDescription(desc: string): boolean {
+  const trimmed = desc.trim();
+  for (const pat of BOILERPLATE_PATTERNS) {
+    if (pat.test(trimmed)) return true;
+  }
+  return false;
+}
+
 export function extractReplName(urlOrId: string): string {
   const trimmed = urlOrId.trim();
   
@@ -155,6 +168,7 @@ export function exportAllEventsCsv(exports: ReplExport[], outputDir: string): st
     }
 
     for (const cp of exp.checkpoints) {
+      if (isBoilerplateDescription(cp.description || '')) continue;
       rows.push({
         index: cp.index,
         replName: exp.replName,
@@ -259,16 +273,25 @@ export function exportWorkTrackingCsv(exports: ReplExport[], outputDir: string):
         seenIndexes.add(indexKey);
 
         let description = '';
+
         let bestCp = null as typeof sortedCheckpoints[0] | null;
-        let bestCpDist = Infinity;
-        for (const cp of sortedCheckpoints) {
-          const dist = Math.abs(cp.index - we.index);
-          if (dist < bestCpDist) {
-            bestCpDist = dist;
+        for (let ci = sortedCheckpoints.length - 1; ci >= 0; ci--) {
+          const cp = sortedCheckpoints[ci];
+          if (cp.index > we.index) continue;
+          if (isBoilerplateDescription(cp.description)) continue;
+          bestCp = cp;
+          break;
+        }
+        if (!bestCp) {
+          for (const cp of sortedCheckpoints) {
+            if (cp.index <= we.index) continue;
+            if (cp.index - we.index > 5) break;
+            if (isBoilerplateDescription(cp.description)) continue;
             bestCp = cp;
+            break;
           }
         }
-        if (bestCp && bestCpDist <= 5) {
+        if (bestCp) {
           description = bestCp.description;
         }
 
