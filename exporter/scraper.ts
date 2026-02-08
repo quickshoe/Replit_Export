@@ -1,7 +1,7 @@
 import { chromium, Browser, BrowserContext, Page } from 'playwright';
 import * as fs from 'fs';
 import * as path from 'path';
-import type { ChatMessage, Checkpoint, WorkEntry, ReplExport } from './types';
+import type { ChatMessage, Checkpoint, WorkEntry, GitCommit, ReplExport } from './types';
 import { calculateDuration, extractReplName } from './utils';
 
 const SESSION_FILE = './playwright-session.json';
@@ -336,6 +336,257 @@ export class ReplitScraper {
     console.log(`    Items with timestamps: ${withTimestamp}/${total}`);
 
     return result;
+  }
+
+  async scrapeGitCommits(page: Page): Promise<GitCommit[]> {
+    console.log('\n  Scraping Git tab for commit history...');
+
+    const gitTabClicked = await page.evaluate(function() {
+      var tabs = document.querySelectorAll(
+        '[role="tab"], [data-testid*="tab"], button[class*="tab" i], ' +
+        'a[class*="tab" i], [class*="Tab"]'
+      );
+      for (var i = 0; i < tabs.length; i++) {
+        var text = (tabs[i].textContent || '').trim().toLowerCase();
+        if (text === 'git' || text === 'version control' || text === 'history') {
+          (tabs[i] as HTMLElement).click();
+          return true;
+        }
+      }
+      var gitIcons = document.querySelectorAll(
+        '[data-testid="git-tab"], [data-testid*="version-control"], ' +
+        '[aria-label*="Git" i], [aria-label*="Version" i]'
+      );
+      if (gitIcons.length > 0) {
+        (gitIcons[0] as HTMLElement).click();
+        return true;
+      }
+      return false;
+    });
+
+    if (!gitTabClicked) {
+      console.log('  Could not find Git tab, trying keyboard shortcut...');
+      await page.keyboard.press('Control+Shift+G');
+      await page.waitForTimeout(2000);
+    } else {
+      await page.waitForTimeout(3000);
+    }
+
+    var scrollAttempts = 0;
+    var maxScrollAttempts = 30;
+    var lastCommitCount = 0;
+    var stableRounds = 0;
+
+    while (scrollAttempts < maxScrollAttempts) {
+      var currentCount = await page.evaluate(function() {
+        var commitEls = document.querySelectorAll(
+          '[class*="commit" i], [class*="CommitList"] li, ' +
+          '[class*="commit-message"], [class*="CommitMessage"], ' +
+          '[data-testid*="commit"]'
+        );
+        return commitEls.length;
+      });
+
+      if (currentCount === lastCommitCount) {
+        stableRounds++;
+        if (stableRounds >= 3) break;
+      } else {
+        stableRounds = 0;
+        lastCommitCount = currentCount;
+      }
+
+      await page.evaluate(function() {
+        var panels = document.querySelectorAll(
+          '[class*="git" i], [class*="commit" i], [class*="VersionControl"], ' +
+          '[class*="history" i], [role="tabpanel"]'
+        );
+        var scrolled = false;
+        for (var i = 0; i < panels.length; i++) {
+          var el = panels[i] as HTMLElement;
+          if (el.scrollHeight > el.clientHeight + 50) {
+            el.scrollTop = el.scrollHeight;
+            scrolled = true;
+            break;
+          }
+        }
+        if (!scrolled) {
+          window.scrollTo(0, document.body.scrollHeight);
+        }
+      });
+
+      var loadMoreBtn = await page.evaluate(function() {
+        var buttons = document.querySelectorAll('button');
+        for (var i = 0; i < buttons.length; i++) {
+          var text = (buttons[i].textContent || '').trim().toLowerCase();
+          if (text.indexOf('load more') >= 0 || text.indexOf('show more') >= 0 ||
+              text.indexOf('older') >= 0) {
+            buttons[i].click();
+            return true;
+          }
+        }
+        return false;
+      });
+
+      await page.waitForTimeout(loadMoreBtn ? 2000 : 1000);
+      scrollAttempts++;
+    }
+
+    console.log(`  Scrolled Git tab (${scrollAttempts} rounds, found ~${lastCommitCount} commit elements)`);
+
+    var rawCommits: Array<{ message: string; relativeTime: string; hash: string | null; elIndex: number }> =
+      await page.evaluate(function() {
+        var results: Array<{ message: string; relativeTime: string; hash: string | null; elIndex: number }> = [];
+
+        var commitItems = document.querySelectorAll(
+          '[class*="commit" i] [class*="message" i], ' +
+          '[class*="CommitList"] li, [data-testid*="commit"], ' +
+          '[class*="commit-entry" i], [class*="CommitEntry"]'
+        );
+
+        if (commitItems.length === 0) {
+          commitItems = document.querySelectorAll('[class*="commit" i]');
+        }
+
+        var seen = {} as Record<string, boolean>;
+
+        for (var i = 0; i < commitItems.length; i++) {
+          var el = commitItems[i];
+
+          var msgEl = el.querySelector(
+            '[class*="message" i], [class*="description" i], ' +
+            '[class*="summary" i], [class*="title" i]'
+          );
+          var message = '';
+          if (msgEl) {
+            message = (msgEl.textContent || '').trim();
+          }
+          if (!message) {
+            var children = el.children;
+            for (var c = 0; c < children.length; c++) {
+              var childText = (children[c].textContent || '').trim();
+              if (childText.length > 5 && childText.length < 500 &&
+                  childText.indexOf('ago') < 0 && childText.indexOf('just now') < 0) {
+                message = childText;
+                break;
+              }
+            }
+          }
+          if (!message) {
+            var fullText = (el.textContent || '').trim();
+            var lines = fullText.split('\n');
+            for (var li = 0; li < lines.length; li++) {
+              var line = lines[li].trim();
+              if (line.length > 5 && line.length < 500 &&
+                  line.indexOf('ago') < 0 && line.indexOf('just now') < 0) {
+                message = line;
+                break;
+              }
+            }
+          }
+          if (!message) continue;
+
+          var timeEl = el.querySelector('time, [class*="time" i], [class*="date" i], [class*="ago" i]');
+          var relativeTime = '';
+          if (timeEl) {
+            relativeTime = (timeEl.textContent || '').trim();
+            if (!relativeTime) {
+              relativeTime = timeEl.getAttribute('datetime') || timeEl.getAttribute('title') || '';
+            }
+          }
+          if (!relativeTime) {
+            var allText = (el.textContent || '');
+            var agoMatch = allText.match(/(\d+\s+(?:second|minute|hour|day|week|month|year)s?\s+ago|just\s+now)/i);
+            if (agoMatch) {
+              relativeTime = agoMatch[1].trim();
+            }
+          }
+
+          var hashEl = el.querySelector(
+            '[class*="hash" i], [class*="sha" i], code, [class*="commit-id" i]'
+          );
+          var hash = hashEl ? (hashEl.textContent || '').trim() : null;
+          if (hash && hash.length > 40) hash = null;
+
+          var key = message + '|' + relativeTime;
+          if (seen[key]) continue;
+          seen[key] = true;
+
+          results.push({ message: message, relativeTime: relativeTime, hash: hash, elIndex: i });
+        }
+
+        return results;
+      });
+
+    console.log(`  Extracted ${rawCommits.length} raw git commits`);
+
+    var commits: GitCommit[] = [];
+
+    for (var ci = 0; ci < rawCommits.length; ci++) {
+      var rc = rawCommits[ci];
+      var absoluteTs: string | null = null;
+
+      if (rc.relativeTime && !rc.relativeTime.match(/^\d{4}/) &&
+          !rc.relativeTime.match(/\w+\s+\d{1,2},?\s+\d{4}/)) {
+        try {
+          var timeElements = await page.$$('time, [class*="time" i], [class*="date" i], [class*="ago" i]');
+          var matchingTimeEl = null as any;
+          for (var te = 0; te < timeElements.length; te++) {
+            var teText = await timeElements[te].textContent();
+            if (teText && teText.trim() === rc.relativeTime) {
+              matchingTimeEl = timeElements[te];
+              break;
+            }
+          }
+
+          if (matchingTimeEl) {
+            var datetimeAttr = await matchingTimeEl.getAttribute('datetime');
+            if (datetimeAttr) {
+              absoluteTs = datetimeAttr;
+            } else {
+              var titleAttr = await matchingTimeEl.getAttribute('title');
+              if (titleAttr) {
+                absoluteTs = titleAttr;
+              } else {
+                await matchingTimeEl.click();
+                await page.waitForTimeout(500);
+                var newText = await matchingTimeEl.textContent();
+                if (newText && newText.trim() !== rc.relativeTime) {
+                  absoluteTs = newText.trim();
+                }
+
+                if (!absoluteTs) {
+                  var parentEl = await matchingTimeEl.evaluateHandle(function(el: Element) {
+                    return el.parentElement;
+                  });
+                  if (parentEl) {
+                    await (parentEl as any).click();
+                    await page.waitForTimeout(500);
+                    newText = await matchingTimeEl.textContent();
+                    if (newText && newText.trim() !== rc.relativeTime) {
+                      absoluteTs = newText.trim();
+                    }
+                  }
+                }
+              }
+            }
+          }
+        } catch (err) {
+        }
+      } else if (rc.relativeTime) {
+        absoluteTs = rc.relativeTime;
+      }
+
+      commits.push({
+        message: rc.message,
+        timestamp: absoluteTs,
+        hash: rc.hash,
+      });
+    }
+
+    var withTs = commits.filter(function(c) { return c.timestamp !== null; }).length;
+    console.log(`  Git commits: ${commits.length} total, ${withTs} with absolute timestamps`);
+
+    return commits;
   }
 
   private async toggleTimestamps(page: Page): Promise<number> {

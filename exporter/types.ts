@@ -26,6 +26,12 @@ export interface WorkEntry {
   _containerIdx?: number;
 }
 
+export interface GitCommit {
+  message: string;
+  timestamp: string | null;
+  hash: string | null;
+}
+
 export interface ReplExport {
   replName: string;
   replUrl: string;
@@ -33,6 +39,7 @@ export interface ReplExport {
   messages: ChatMessage[];
   checkpoints: Checkpoint[];
   workEntries: WorkEntry[];
+  gitCommits: GitCommit[];
 }
 
 export interface ExporterConfig {
