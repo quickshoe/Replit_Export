@@ -1,10 +1,13 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import type { ReplExport, ChatMessage } from './types';
+import type { ReplExport, ChatMessage, GitCommit } from './types';
+
+const SAVED_PROGRESS_PATTERN = /^saved progress/i;
+const TRANSITIONED_PATTERN = /^transitioned from \w+ to \w+ mode/i;
 
 const BOILERPLATE_PATTERNS = [
-  /^saved progress at the end of the loop$/i,
-  /^transitioned from \w+ to \w+ mode$/i,
+  SAVED_PROGRESS_PATTERN,
+  TRANSITIONED_PATTERN,
 ];
 
 function isBoilerplateDescription(desc: string): boolean {
@@ -13,6 +16,14 @@ function isBoilerplateDescription(desc: string): boolean {
     if (pat.test(trimmed)) return true;
   }
   return false;
+}
+
+function isSavedProgress(desc: string): boolean {
+  return SAVED_PROGRESS_PATTERN.test(desc.trim());
+}
+
+function isTransitioned(desc: string): boolean {
+  return TRANSITIONED_PATTERN.test(desc.trim());
 }
 
 export function extractReplName(urlOrId: string): string {
@@ -253,6 +264,65 @@ export function exportChatCsv(exports: ReplExport[], outputDir: string): string 
   return filePath;
 }
 
+function buildGitCommitDescriptionMap(
+  checkpoints: ReplExport['checkpoints'],
+  gitCommits: GitCommit[]
+): Map<number, string> {
+  const descriptionMap = new Map<number, string>();
+  if (!gitCommits || gitCommits.length === 0) return descriptionMap;
+
+  const parsedCommits = gitCommits.map((gc, idx) => ({
+    ...gc,
+    parsed: parseTimestamp(gc.timestamp),
+    originalIdx: idx,
+  })).filter(gc => gc.parsed !== null)
+    .sort((a, b) => b.parsed!.getTime() - a.parsed!.getTime());
+
+  if (parsedCommits.length === 0) return descriptionMap;
+
+  const usedCommitIndices = new Set<number>();
+
+  const sortedCheckpoints = [...checkpoints]
+    .filter(cp => cp.timestamp && cp.description)
+    .sort((a, b) => {
+      const ta = parseTimestamp(a.timestamp);
+      const tb = parseTimestamp(b.timestamp);
+      if (!ta || !tb) return 0;
+      return tb.getTime() - ta.getTime();
+    });
+
+  const MAX_MATCH_WINDOW_MS = 3 * 60 * 1000;
+
+  for (const cp of sortedCheckpoints) {
+    if (!isSavedProgress(cp.description)) continue;
+
+    const cpTime = parseTimestamp(cp.timestamp);
+    if (!cpTime) continue;
+
+    let bestCommitIdx = -1;
+    let bestDiff = Infinity;
+
+    for (let ci = 0; ci < parsedCommits.length; ci++) {
+      if (usedCommitIndices.has(ci)) continue;
+      const gc = parsedCommits[ci];
+      if (isSavedProgress(gc.message) || isTransitioned(gc.message)) continue;
+
+      const diff = Math.abs(gc.parsed!.getTime() - cpTime.getTime());
+      if (diff <= MAX_MATCH_WINDOW_MS && diff < bestDiff) {
+        bestDiff = diff;
+        bestCommitIdx = ci;
+      }
+    }
+
+    if (bestCommitIdx >= 0) {
+      usedCommitIndices.add(bestCommitIdx);
+      descriptionMap.set(cp.index, parsedCommits[bestCommitIdx].message);
+    }
+  }
+
+  return descriptionMap;
+}
+
 export function exportWorkTrackingCsv(exports: ReplExport[], outputDir: string): string {
   const rows: Record<string, any>[] = [];
   const seenIndexes = new Set<string>();
@@ -267,7 +337,20 @@ export function exportWorkTrackingCsv(exports: ReplExport[], outputDir: string):
       const sortedMessages = (exp.messages || [])
         .sort((a, b) => a.index - b.index);
 
-      for (const we of exp.workEntries) {
+      const gitDescMap = buildGitCommitDescriptionMap(
+        exp.checkpoints || [],
+        exp.gitCommits || []
+      );
+
+      if (gitDescMap.size > 0) {
+        console.log(`  [Git] Matched ${gitDescMap.size} git commit descriptions to checkpoints`);
+      }
+
+      const usedDescriptions = new Set<string>();
+
+      const sortedWorkEntries = [...exp.workEntries].sort((a, b) => b.index - a.index);
+
+      for (const we of sortedWorkEntries) {
         const indexKey = exp.replName + '|' + we.index;
         if (seenIndexes.has(indexKey)) {
           dupCount++;
@@ -281,21 +364,58 @@ export function exportWorkTrackingCsv(exports: ReplExport[], outputDir: string):
         for (let ci = sortedCheckpoints.length - 1; ci >= 0; ci--) {
           const cp = sortedCheckpoints[ci];
           if (cp.index > we.index) continue;
+
+          if (isSavedProgress(cp.description)) {
+            const gitDesc = gitDescMap.get(cp.index);
+            if (gitDesc && !usedDescriptions.has(gitDesc)) {
+              description = gitDesc;
+              usedDescriptions.add(gitDesc);
+              break;
+            }
+            continue;
+          }
+
+          if (isTransitioned(cp.description)) {
+            if (!usedDescriptions.has(cp.description)) {
+              description = cp.description;
+              usedDescriptions.add(cp.description);
+            }
+            break;
+          }
+
           if (isBoilerplateDescription(cp.description)) continue;
-          bestCp = cp;
-          break;
-        }
-        if (!bestCp) {
-          for (const cp of sortedCheckpoints) {
-            if (cp.index <= we.index) continue;
-            if (cp.index - we.index > 5) break;
-            if (isBoilerplateDescription(cp.description)) continue;
+
+          if (!usedDescriptions.has(cp.description)) {
             bestCp = cp;
             break;
           }
         }
-        if (bestCp) {
+
+        if (!description && !bestCp) {
+          for (const cp of sortedCheckpoints) {
+            if (cp.index <= we.index) continue;
+            if (cp.index - we.index > 5) break;
+            if (isBoilerplateDescription(cp.description)) {
+              if (isSavedProgress(cp.description)) {
+                const gitDesc = gitDescMap.get(cp.index);
+                if (gitDesc && !usedDescriptions.has(gitDesc)) {
+                  description = gitDesc;
+                  usedDescriptions.add(gitDesc);
+                  break;
+                }
+              }
+              continue;
+            }
+            if (!usedDescriptions.has(cp.description)) {
+              bestCp = cp;
+              break;
+            }
+          }
+        }
+
+        if (!description && bestCp) {
           description = bestCp.description;
+          usedDescriptions.add(description);
         }
 
         if (!description) {
@@ -309,7 +429,11 @@ export function exportWorkTrackingCsv(exports: ReplExport[], outputDir: string):
           }
           if (bestMsg) {
             const content = bestMsg.content.replace(/\s+/g, ' ').trim();
-            description = content.length > 100 ? content.substring(0, 100) + '...' : content;
+            const msgDesc = content.length > 100 ? content.substring(0, 100) + '...' : content;
+            if (!usedDescriptions.has(msgDesc)) {
+              description = msgDesc;
+              usedDescriptions.add(msgDesc);
+            }
           }
         }
 
@@ -328,6 +452,8 @@ export function exportWorkTrackingCsv(exports: ReplExport[], outputDir: string):
       }
     }
   }
+
+  rows.sort((a, b) => (a.index as number) - (b.index as number));
 
   if (dupCount > 0) {
     console.log(`  [Dedup] Removed ${dupCount} duplicate work-tracking rows`);
