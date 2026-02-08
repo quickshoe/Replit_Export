@@ -220,6 +220,7 @@ export class ReplitScraper {
     if (!this.context) throw new Error('Browser not initialized');
 
     const replName = extractReplName(replUrl);
+    const scrapeStartTime = Date.now();
     console.log(`\nScraping: ${replName}`);
 
     const page = await this.context.newPage();
@@ -254,19 +255,52 @@ export class ReplitScraper {
 
     await page.waitForTimeout(2000);
 
+    // === STEP 1: Load full chat history and expand sections ===
     const chatContainer = await this.findChatContainer(page);
     console.log(`Chat container found: ${chatContainer || 'none (will use fallback scrolling)'}`);
     
-    console.log('Scrolling to load full chat history...');
+    console.log('Step 1: Scrolling to load full chat history...');
     await this.scrollToLoadAll(page, chatContainer);
 
-    console.log('Processing chat: expand targeted sections, then extract all...');
-    const { messages, checkpoints, workEntries } = await this.walkAndExtract(page, outputDir);
+    console.log('Step 1b: Expanding targeted sections (messages & actions, checkpoints, worked for)...');
+    var expandedCount = await this.expandTargetedSections(page);
+    console.log(`  Expanded ${expandedCount} collapsed sections`);
+    if (expandedCount > 0) {
+      await page.waitForTimeout(1500);
+    }
+
+    // === STEP 2: Navigate to Git tab, click one relative timestamp, scrape commits ===
+    // The one-click timestamp conversion in the Git tab converts ALL relative timestamps
+    // across the entire UI to absolute. This is critical for accurate timestamp extraction.
+    let gitCommits: GitCommit[] = [];
+    try {
+      gitCommits = await this.scrapeGitCommits(page);
+    } catch (err) {
+      console.log('  WARNING: Could not scrape Git commits:', (err as Error).message);
+      console.log('  Timestamps may remain relative. Extraction will continue but some timestamps may be missing.');
+    }
+
+    // === STEP 3: Navigate back to chat panel ===
+    console.log('\nStep 3: Navigating back to chat panel...');
+    await this.navigateToChatPanel(page, fullUrl);
+    await page.waitForTimeout(2000);
+
+    // === STEP 4: Hover over duration elements for precise times ===
+    console.log('Step 4: Hovering over duration elements to capture precise tooltips...');
+    var hoverCount = await this.hoverDurationElements(page);
+    if (hoverCount > 0) {
+      console.log(`  Captured ${hoverCount} precise duration tooltips via hover`);
+    }
+
+    // === STEP 5: Extract all chat data (timestamps should now be absolute) ===
+    console.log('Step 5: Extracting all chat data...');
+    const { messages, checkpoints, workEntries } = await this.extractAllData(page, outputDir);
 
     for (const cp of checkpoints) {
       cp.durationSeconds = calculateDuration(cp.timestamp, messages);
     }
 
+    // Save DOM debug info
     try {
       const domDebug = await page.evaluate(function() {
         var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
@@ -309,13 +343,6 @@ export class ReplitScraper {
       console.log('  Note: Could not save DOM debug info');
     }
 
-    let gitCommits: GitCommit[] = [];
-    try {
-      gitCommits = await this.scrapeGitCommits(page);
-    } catch (err) {
-      console.log('  Note: Could not scrape Git commits:', (err as Error).message);
-    }
-
     try {
       const storageState = await this.context.storageState();
       fs.writeFileSync(SESSION_FILE, JSON.stringify(storageState, null, 2));
@@ -335,6 +362,11 @@ export class ReplitScraper {
       gitCommits,
     };
 
+    const elapsedMs = Date.now() - scrapeStartTime;
+    const elapsedMins = Math.floor(elapsedMs / 60000);
+    const elapsedSecs = Math.round((elapsedMs % 60000) / 1000);
+    const elapsedStr = elapsedMins > 0 ? `${elapsedMins}m ${elapsedSecs}s` : `${elapsedSecs}s`;
+
     console.log(`\n  Results summary:`);
     console.log(`    Messages: ${messages.length} (${messages.filter(m => m.type === 'user').length} user, ${messages.filter(m => m.type === 'agent').length} agent)`);
     console.log(`    Checkpoints: ${checkpoints.length}`);
@@ -343,12 +375,13 @@ export class ReplitScraper {
     const withTimestamp = [...messages, ...workEntries, ...checkpoints].filter((e: any) => e.timestamp).length;
     const total = messages.length + workEntries.length + checkpoints.length;
     console.log(`    Items with timestamps: ${withTimestamp}/${total}`);
+    console.log(`    Extraction time: ${elapsedStr}`);
 
     return result;
   }
 
   async scrapeGitCommits(page: Page): Promise<GitCommit[]> {
-    console.log('\n  Scraping Git tab for commit history...');
+    console.log('\nStep 2: Scraping Git tab for commit history...');
 
     const gitTabClicked = await page.evaluate(function() {
       var tabs = document.querySelectorAll(
@@ -381,6 +414,7 @@ export class ReplitScraper {
       await page.waitForTimeout(3000);
     }
 
+    // Scroll to load all commits
     var scrollAttempts = 0;
     var maxScrollAttempts = 30;
     var lastCommitCount = 0;
@@ -442,160 +476,286 @@ export class ReplitScraper {
 
     console.log(`  Scrolled Git tab (${scrollAttempts} rounds, found ~${lastCommitCount} commit elements)`);
 
-    var rawCommits: Array<{ message: string; relativeTime: string; hash: string | null; elIndex: number }> =
-      await page.evaluate(function() {
-        var results: Array<{ message: string; relativeTime: string; hash: string | null; elIndex: number }> = [];
+    // Step 2b: Click ONE relative timestamp to convert ALL to absolute
+    console.log('  Step 2b: Clicking a relative timestamp to convert all to absolute...');
+    var clickedRelativeTs = await this.clickOneRelativeTimestamp(page);
+    if (clickedRelativeTs) {
+      console.log('  Successfully clicked relative timestamp - all timestamps should now be absolute');
+      await page.waitForTimeout(1000);
+    } else {
+      console.log('  No relative timestamps found to click (may already be absolute)');
+    }
 
-        var commitItems = document.querySelectorAll(
-          '[class*="commit" i] [class*="message" i], ' +
-          '[class*="CommitList"] li, [data-testid*="commit"], ' +
-          '[class*="commit-entry" i], [class*="CommitEntry"]'
-        );
-
-        if (commitItems.length === 0) {
-          commitItems = document.querySelectorAll('[class*="commit" i]');
+    // Save Git tab DOM debug
+    try {
+      var gitDebug = await page.evaluate(function() {
+        var body = document.body;
+        var panels = document.querySelectorAll('[role="tabpanel"], [class*="git" i], [class*="commit" i], [class*="VersionControl"]');
+        var panelInfo = [] as any[];
+        for (var pi = 0; pi < panels.length && pi < 5; pi++) {
+          var p = panels[pi];
+          panelInfo.push({
+            tag: p.tagName,
+            className: (p.getAttribute('class') || '').substring(0, 200),
+            role: p.getAttribute('role') || '',
+            childCount: p.children.length,
+            textPreview: (p.textContent || '').substring(0, 500),
+            outerHTMLPreview: p.outerHTML.substring(0, 500)
+          });
         }
+        var commitEls = document.querySelectorAll('[class*="commit" i]');
+        var commitInfo = [] as any[];
+        for (var ci = 0; ci < commitEls.length && ci < 10; ci++) {
+          var c = commitEls[ci];
+          commitInfo.push({
+            tag: c.tagName,
+            className: (c.getAttribute('class') || '').substring(0, 200),
+            childCount: c.children.length,
+            textPreview: (c.textContent || '').substring(0, 300),
+            outerHTMLPreview: c.outerHTML.substring(0, 500)
+          });
+        }
+        return { panels: panelInfo, commitElements: commitInfo, totalCommitEls: commitEls.length };
+      });
+      var gitDebugPath = path.join('exports', 'git-tab-debug.json');
+      fs.writeFileSync(gitDebugPath, JSON.stringify(gitDebug, null, 2));
+      console.log(`  Git tab debug saved: ${gitDebugPath}`);
+    } catch (err) {
+      console.log('  Note: Could not save Git tab debug info');
+    }
 
-        var seen = {} as Record<string, boolean>;
+    // Step 2c: Extract commits (read-only, no clicking commit lines)
+    var commits: GitCommit[] = await page.evaluate(function() {
+      var results: Array<{ message: string; timestamp: string | null; hash: string | null }> = [];
 
-        for (var i = 0; i < commitItems.length; i++) {
-          var el = commitItems[i];
+      var commitItems = document.querySelectorAll(
+        '[class*="commit" i] [class*="message" i], ' +
+        '[class*="CommitList"] li, [data-testid*="commit"], ' +
+        '[class*="commit-entry" i], [class*="CommitEntry"]'
+      );
 
-          var msgEl = el.querySelector(
-            '[class*="message" i], [class*="description" i], ' +
-            '[class*="summary" i], [class*="title" i]'
-          );
-          var message = '';
-          if (msgEl) {
-            message = (msgEl.textContent || '').trim();
-          }
-          if (!message) {
-            var children = el.children;
-            for (var c = 0; c < children.length; c++) {
-              var childText = (children[c].textContent || '').trim();
-              if (childText.length > 5 && childText.length < 500 &&
-                  childText.indexOf('ago') < 0 && childText.indexOf('just now') < 0) {
+      if (commitItems.length === 0) {
+        commitItems = document.querySelectorAll('[class*="commit" i]');
+      }
+
+      var seen = {} as Record<string, boolean>;
+
+      for (var i = 0; i < commitItems.length; i++) {
+        var el = commitItems[i];
+
+        var msgEl = el.querySelector(
+          '[class*="message" i], [class*="description" i], ' +
+          '[class*="summary" i], [class*="title" i]'
+        );
+        var message = '';
+        if (msgEl) {
+          message = (msgEl.textContent || '').trim();
+        }
+        if (!message) {
+          var children = el.children;
+          for (var c = 0; c < children.length; c++) {
+            var childText = (children[c].textContent || '').trim();
+            if (childText.length > 5 && childText.length < 500) {
+              var isTimeOnly = /^\d{1,2}:\d{2}\s*(?:am|pm)/i.test(childText) ||
+                /^\w+\s+\d{1,2},?\s+\d{4}/i.test(childText) ||
+                /^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i.test(childText);
+              if (!isTimeOnly) {
                 message = childText;
                 break;
               }
             }
           }
-          if (!message) {
-            var fullText = (el.textContent || '').trim();
-            var lines = fullText.split('\n');
-            for (var li = 0; li < lines.length; li++) {
-              var line = lines[li].trim();
-              if (line.length > 5 && line.length < 500 &&
-                  line.indexOf('ago') < 0 && line.indexOf('just now') < 0) {
+        }
+        if (!message) {
+          var fullText = (el.textContent || '').trim();
+          var lines = fullText.split('\n');
+          for (var li = 0; li < lines.length; li++) {
+            var line = lines[li].trim();
+            if (line.length > 5 && line.length < 500) {
+              var isTimeOnlyLine = /^\d{1,2}:\d{2}\s*(?:am|pm)/i.test(line) ||
+                /^\w+\s+\d{1,2},?\s+\d{4}/i.test(line) ||
+                /^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i.test(line);
+              if (!isTimeOnlyLine) {
                 message = line;
                 break;
               }
             }
           }
-          if (!message) continue;
+        }
+        if (!message) continue;
 
-          var timeEl = el.querySelector('time, [class*="time" i], [class*="date" i], [class*="ago" i]');
-          var relativeTime = '';
-          if (timeEl) {
-            relativeTime = (timeEl.textContent || '').trim();
-            if (!relativeTime) {
-              relativeTime = timeEl.getAttribute('datetime') || timeEl.getAttribute('title') || '';
-            }
+        var timestamp: string | null = null;
+
+        var timeEl = el.querySelector('time, [class*="time" i], [class*="date" i], [class*="ago" i]');
+        if (timeEl) {
+          var timeText = (timeEl.textContent || '').trim();
+          var dtAttr = timeEl.getAttribute('datetime') || '';
+          if (dtAttr) {
+            timestamp = dtAttr;
+          } else if (timeText && !/^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i.test(timeText)) {
+            timestamp = timeText;
           }
-          if (!relativeTime) {
-            var allText = (el.textContent || '');
-            var agoMatch = allText.match(/(\d+\s+(?:second|minute|hour|day|week|month|year)s?\s+ago|just\s+now)/i);
-            if (agoMatch) {
-              relativeTime = agoMatch[1].trim();
-            }
-          }
-
-          var hashEl = el.querySelector(
-            '[class*="hash" i], [class*="sha" i], code, [class*="commit-id" i]'
-          );
-          var hash = hashEl ? (hashEl.textContent || '').trim() : null;
-          if (hash && hash.length > 40) hash = null;
-
-          var key = message + '|' + relativeTime;
-          if (seen[key]) continue;
-          seen[key] = true;
-
-          results.push({ message: message, relativeTime: relativeTime, hash: hash, elIndex: i });
         }
 
-        return results;
-      });
-
-    console.log(`  Extracted ${rawCommits.length} raw git commits`);
-
-    var commits: GitCommit[] = [];
-
-    for (var ci = 0; ci < rawCommits.length; ci++) {
-      var rc = rawCommits[ci];
-      var absoluteTs: string | null = null;
-
-      if (rc.relativeTime && !rc.relativeTime.match(/^\d{4}/) &&
-          !rc.relativeTime.match(/\w+\s+\d{1,2},?\s+\d{4}/)) {
-        try {
-          var timeElements = await page.$$('time, [class*="time" i], [class*="date" i], [class*="ago" i]');
-          var matchingTimeEl = null as any;
-          for (var te = 0; te < timeElements.length; te++) {
-            var teText = await timeElements[te].textContent();
-            if (teText && teText.trim() === rc.relativeTime) {
-              matchingTimeEl = timeElements[te];
-              break;
-            }
+        if (!timestamp) {
+          var allText = (el.textContent || '');
+          var absMatch = allText.match(/(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})/i);
+          if (absMatch) {
+            timestamp = absMatch[1].trim();
           }
-
-          if (matchingTimeEl) {
-            var datetimeAttr = await matchingTimeEl.getAttribute('datetime');
-            if (datetimeAttr) {
-              absoluteTs = datetimeAttr;
-            } else {
-              var titleAttr = await matchingTimeEl.getAttribute('title');
-              if (titleAttr) {
-                absoluteTs = titleAttr;
-              } else {
-                await matchingTimeEl.click();
-                await page.waitForTimeout(500);
-                var newText = await matchingTimeEl.textContent();
-                if (newText && newText.trim() !== rc.relativeTime) {
-                  absoluteTs = newText.trim();
-                }
-
-                if (!absoluteTs) {
-                  var parentEl = await matchingTimeEl.evaluateHandle(function(el: Element) {
-                    return el.parentElement;
-                  });
-                  if (parentEl) {
-                    await (parentEl as any).click();
-                    await page.waitForTimeout(500);
-                    newText = await matchingTimeEl.textContent();
-                    if (newText && newText.trim() !== rc.relativeTime) {
-                      absoluteTs = newText.trim();
-                    }
-                  }
-                }
-              }
-            }
-          }
-        } catch (err) {
         }
-      } else if (rc.relativeTime) {
-        absoluteTs = rc.relativeTime;
+
+        var hashEl = el.querySelector(
+          '[class*="hash" i], [class*="sha" i], code, [class*="commit-id" i]'
+        );
+        var hash = hashEl ? (hashEl.textContent || '').trim() : null;
+        if (hash && hash.length > 40) hash = null;
+
+        var key = message + '|' + (timestamp || '');
+        if (seen[key]) continue;
+        seen[key] = true;
+
+        results.push({ message: message, timestamp: timestamp, hash: hash });
       }
 
-      commits.push({
-        message: rc.message,
-        timestamp: absoluteTs,
-        hash: rc.hash,
-      });
-    }
+      return results;
+    });
 
     var withTs = commits.filter(function(c) { return c.timestamp !== null; }).length;
     console.log(`  Git commits: ${commits.length} total, ${withTs} with absolute timestamps`);
 
     return commits;
+  }
+
+  private async clickOneRelativeTimestamp(page: Page): Promise<boolean> {
+    var clicked = await page.evaluate(function() {
+      var timeEls = document.querySelectorAll('time, [class*="time" i], [class*="date" i], [class*="ago" i], [class*="Timestamp"]');
+      for (var i = 0; i < timeEls.length; i++) {
+        var el = timeEls[i] as HTMLElement;
+        var text = (el.textContent || '').trim();
+        if (/^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i.test(text) || /^just\s+now$/i.test(text)) {
+          var rect = el.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) {
+            el.scrollIntoView({ block: 'center', behavior: 'instant' });
+            el.click();
+            return text;
+          }
+        }
+      }
+      return null;
+    });
+
+    if (!clicked) return false;
+
+    console.log(`  Clicked relative timestamp: "${clicked}"`);
+    await page.waitForTimeout(1500);
+
+    var verified = await page.evaluate(function() {
+      var timeEls = document.querySelectorAll('time, [class*="time" i], [class*="date" i], [class*="ago" i], [class*="Timestamp"]');
+      var relativeCount = 0;
+      var absoluteCount = 0;
+      for (var i = 0; i < timeEls.length; i++) {
+        var text = (timeEls[i].textContent || '').trim();
+        if (/^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i.test(text) || /^just\s+now$/i.test(text)) {
+          relativeCount++;
+        } else if (text.length > 3) {
+          absoluteCount++;
+        }
+      }
+      return { relativeCount: relativeCount, absoluteCount: absoluteCount };
+    });
+
+    console.log(`  After click: ${verified.absoluteCount} absolute, ${verified.relativeCount} relative timestamps`);
+
+    if (verified.relativeCount > 0 && verified.absoluteCount === 0) {
+      console.log('  WARNING: One-click conversion may have failed. Trying parent element click...');
+      var retryClicked = await page.evaluate(function() {
+        var timeEls = document.querySelectorAll('time, [class*="time" i], [class*="date" i], [class*="ago" i], [class*="Timestamp"]');
+        for (var i = 0; i < timeEls.length; i++) {
+          var el = timeEls[i] as HTMLElement;
+          var text = (el.textContent || '').trim();
+          if (/^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i.test(text) || /^just\s+now$/i.test(text)) {
+            var parent = el.parentElement;
+            if (parent) {
+              parent.scrollIntoView({ block: 'center', behavior: 'instant' });
+              parent.click();
+              return true;
+            }
+          }
+        }
+        return false;
+      });
+      if (retryClicked) {
+        await page.waitForTimeout(1500);
+      }
+    }
+
+    return verified.absoluteCount > 0;
+  }
+
+  private async navigateToChatPanel(page: Page, replUrl: string): Promise<void> {
+    var chatClicked = await page.evaluate(function() {
+      var tabs = document.querySelectorAll(
+        '[role="tab"], [data-testid*="tab"], button[class*="tab" i], ' +
+        'a[class*="tab" i], [class*="Tab"]'
+      );
+      for (var i = 0; i < tabs.length; i++) {
+        var text = (tabs[i].textContent || '').trim().toLowerCase();
+        if (text === 'chat' || text === 'agent' || text === 'ai' || text === 'assistant') {
+          (tabs[i] as HTMLElement).click();
+          return true;
+        }
+      }
+      var chatIcons = document.querySelectorAll(
+        '[data-testid="chat-tab"], [data-testid*="agent-tab"], ' +
+        '[aria-label*="Chat" i], [aria-label*="Agent" i], [aria-label*="AI" i]'
+      );
+      if (chatIcons.length > 0) {
+        (chatIcons[0] as HTMLElement).click();
+        return true;
+      }
+      return false;
+    });
+
+    if (chatClicked) {
+      console.log('  Clicked chat panel tab');
+      await page.waitForTimeout(2000);
+    } else {
+      console.log('  Could not find chat tab, navigating to repl URL...');
+      try {
+        await page.goto(replUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      } catch (err) {
+        console.log('  Navigation timeout, continuing...');
+      }
+      await page.waitForTimeout(5000);
+    }
+
+    // Verify chat panel is loaded by checking for event containers
+    var maxRetries = 3;
+    for (var retry = 0; retry < maxRetries; retry++) {
+      var containerCount = await page.evaluate(function() {
+        return document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]').length;
+      });
+      if (containerCount > 0) {
+        console.log(`  Chat panel confirmed (${containerCount} containers found)`);
+        return;
+      }
+      console.log(`  Chat panel not yet loaded (attempt ${retry + 1}/${maxRetries}), waiting...`);
+      if (retry < maxRetries - 1) {
+        await page.waitForTimeout(3000);
+        // Try navigating directly if tab click didn't work
+        if (retry === 1) {
+          console.log('  Retrying via direct URL navigation...');
+          try {
+            await page.goto(replUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+          } catch (err) {
+            console.log('  Navigation timeout, continuing...');
+          }
+          await page.waitForTimeout(5000);
+        }
+      }
+    }
+    console.log('  WARNING: Could not confirm chat panel loaded. Extraction may be incomplete.');
   }
 
 
@@ -638,154 +798,6 @@ export class ReplitScraper {
     });
 
     return totalClicked;
-  }
-
-  private async resolveRelativeTimestamps(page: Page): Promise<number> {
-    var relativeInfos: { containerIdx: number; elIndex: number; text: string }[] = await page.evaluate(function() {
-      var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
-      var results = [] as any[];
-      for (var i = 0; i < containers.length; i++) {
-        var el = containers[i];
-        var rawText = (el.textContent || '').trim();
-
-        var isCheckpoint = (el.getAttribute('class') || '').toLowerCase().indexOf('checkpoint') >= 0 ||
-          (el.getAttribute('data-event-type') || '').toLowerCase().indexOf('checkpoint') >= 0 ||
-          el.querySelector('[class*="checkpoint" i], [data-event-type*="checkpoint"]') !== null ||
-          (rawText.indexOf('Checkpoint') >= 0 && rawText.length < 500);
-
-        if (isCheckpoint) continue;
-
-        var isWork = (el.getAttribute('class') || '').toLowerCase().indexOf('endofrunsummary') >= 0 ||
-          el.querySelector('[class*="EndOfRunSummary"]') !== null ||
-          /Worked\s+for\s+/i.test(rawText);
-        if (isWork) continue;
-
-        var tsModuleEls = el.querySelectorAll('[class*="Timestamp-module"], [class*="timestamp-module"]');
-        for (var tmi = 0; tmi < tsModuleEls.length; tmi++) {
-          var tmEl = tsModuleEls[tmi];
-          var tmText = (tmEl.textContent || '').trim();
-          if (/^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i.test(tmText)) {
-            var allEls = el.querySelectorAll('*');
-            var elIdx = -1;
-            for (var ai = 0; ai < allEls.length; ai++) {
-              if (allEls[ai] === tmEl) { elIdx = ai; break; }
-            }
-            if (elIdx >= 0) {
-              var r = tmEl.getBoundingClientRect();
-              if (r.width > 0 && r.height > 0) {
-                results.push({ containerIdx: i, elIndex: elIdx, text: tmText });
-              }
-            }
-            break;
-          }
-        }
-      }
-      return results;
-    });
-
-    if (relativeInfos.length === 0) return 0;
-    console.log(`  Found ${relativeInfos.length} relative timestamps to resolve via hover`);
-
-    var resolved = 0;
-
-    for (var ri = 0; ri < relativeInfos.length; ri++) {
-      var info = relativeInfos[ri];
-      try {
-        await page.evaluate(function(idx) {
-          var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
-          if (idx < containers.length) {
-            containers[idx].scrollIntoView({ block: 'center', behavior: 'instant' });
-          }
-        }, info.containerIdx);
-        await page.waitForTimeout(200);
-
-        var coords = await page.evaluate(function(args) {
-          var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
-          if (args.containerIdx >= containers.length) return null;
-          var el = containers[args.containerIdx];
-          var candidates = el.querySelectorAll('*');
-          if (args.elIndex >= candidates.length) return null;
-          var target = candidates[args.elIndex];
-          var r = target.getBoundingClientRect();
-          if (r.width === 0 || r.height === 0) return null;
-          return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-        }, { containerIdx: info.containerIdx, elIndex: info.elIndex });
-
-        if (!coords) continue;
-
-        await page.mouse.move(coords.x, coords.y);
-        await page.waitForTimeout(500);
-
-        var absoluteTs = await page.evaluate(function(args) {
-          var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
-          if (args.containerIdx >= containers.length) return null;
-          var el = containers[args.containerIdx];
-
-          var candidates = el.querySelectorAll('*');
-          if (args.elIndex < candidates.length) {
-            var hovered = candidates[args.elIndex];
-            var ta = hovered.getAttribute('title') || '';
-            if (ta && ta.length > 0 && ta.length < 100 && !/^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i.test(ta)) {
-              return ta;
-            }
-            var aa = hovered.getAttribute('aria-label') || '';
-            if (aa && aa.length > 0 && aa.length < 100 && !/^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i.test(aa)) {
-              return aa;
-            }
-          }
-
-          var tooltipSelectors = [
-            '[role="tooltip"]',
-            '[class*="tooltip" i]',
-            '[class*="Tooltip"]',
-            '[class*="popover" i]',
-            '[class*="Popover"]',
-            '[data-radix-popper-content-wrapper]',
-            '[data-state="open"][class*="Content"]',
-            '[data-side]'
-          ];
-          var allTooltips = document.querySelectorAll(tooltipSelectors.join(', '));
-          for (var ti = 0; ti < allTooltips.length; ti++) {
-            var tt = (allTooltips[ti].textContent || '').trim();
-            if (tt.length > 0 && tt.length < 100 && !/^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i.test(tt)) {
-              if (/\d{1,2}:\d{2}\s*(?:am|pm)/i.test(tt) || /\w+\s+\d{1,2},?\s+\d{4}/i.test(tt) || /^\d{4}-\d{2}/.test(tt)) {
-                return tt;
-              }
-            }
-          }
-
-          return null;
-        }, { containerIdx: info.containerIdx, elIndex: info.elIndex });
-
-        if (absoluteTs) {
-          var verified = await page.evaluate(function(args) {
-            var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
-            if (args.idx >= containers.length) return false;
-            var el = containers[args.idx];
-            var tsModuleEls = el.querySelectorAll('[class*="Timestamp-module"], [class*="timestamp-module"]');
-            for (var vi = 0; vi < tsModuleEls.length; vi++) {
-              var vText = (tsModuleEls[vi].textContent || '').trim();
-              if (vText === args.originalText) {
-                containers[args.idx].setAttribute('data-resolved-timestamp', args.ts);
-                return true;
-              }
-            }
-            return false;
-          }, { idx: info.containerIdx, ts: absoluteTs, originalText: info.text });
-
-          if (verified) {
-            console.log(`  [Hover TS] Container ${info.containerIdx}: "${info.text}" -> "${absoluteTs}"`);
-            resolved++;
-          }
-        }
-
-        await page.mouse.move(0, 0);
-        await page.waitForTimeout(100);
-      } catch (e) {
-      }
-    }
-
-    return resolved;
   }
 
   private async hoverDurationElements(page: Page): Promise<number> {
@@ -995,15 +1007,8 @@ export class ReplitScraper {
 
       var timestamp = null as any;
 
-      var resolvedTs = el.getAttribute('data-resolved-timestamp');
-      if (resolvedTs && resolvedTs.length > 0) {
-        timestamp = resolvedTs;
-      }
-
-      if (!timestamp) {
-        var realTsMatch = rawText.match(/(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})/i);
-        if (realTsMatch) timestamp = realTsMatch[1];
-      }
+      var realTsMatch = rawText.match(/(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})/i);
+      if (realTsMatch) timestamp = realTsMatch[1];
 
       if (!timestamp) {
         var tsModuleEls = el.querySelectorAll('[class*="Timestamp-module"], [class*="timestamp-module"]');
@@ -1409,31 +1414,7 @@ export class ReplitScraper {
     });
   }
 
-  private async walkAndExtract(page: Page, _outputDir: string = './exports'): Promise<{ messages: ChatMessage[]; checkpoints: Checkpoint[]; workEntries: WorkEntry[] }> {
-    // ===== PHASE 1: Targeted expansion =====
-    console.log('  Phase 1: Expanding targeted sections (messages & actions, checkpoints, worked for)...');
-    var expandedCount = await this.expandTargetedSections(page);
-    console.log(`  Expanded ${expandedCount} collapsed sections`);
-
-    if (expandedCount > 0) {
-      await page.waitForTimeout(1500);
-    }
-
-    // ===== PHASE 2: Resolve relative timestamps via hover =====
-    console.log('  Phase 2: Resolving relative timestamps via hover...');
-    var tsResolved = await this.resolveRelativeTimestamps(page);
-    if (tsResolved > 0) {
-      console.log(`  Resolved ${tsResolved} relative timestamps to absolute`);
-    }
-
-    // ===== PHASE 2.5: Hover over duration elements to capture precise tooltips =====
-    console.log('  Phase 2.5: Hovering over duration elements to capture precise tooltips...');
-    var hoverCount = await this.hoverDurationElements(page);
-    if (hoverCount > 0) {
-      console.log(`  Captured ${hoverCount} precise duration tooltips via hover`);
-    }
-
-    // ===== PHASE 3: Extract all data =====
+  private async extractAllData(page: Page, _outputDir: string = './exports'): Promise<{ messages: ChatMessage[]; checkpoints: Checkpoint[]; workEntries: WorkEntry[] }> {
     var totalContainers = await page.evaluate(function() {
       return document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]').length;
     });
