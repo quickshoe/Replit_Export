@@ -653,35 +653,207 @@ export class ReplitScraper {
   async scrapeGitCommits(page: Page): Promise<GitCommit[]> {
     console.log('\nStep 2: Scraping Git tab for commit history...');
 
-    const gitTabClicked = await page.evaluate(function() {
-      var tabs = document.querySelectorAll(
-        '[role="tab"], [data-testid*="tab"], button[class*="tab" i], ' +
-        'a[class*="tab" i], [class*="Tab"]'
+    var gitPanelOpen = false;
+
+    // Strategy 1: Find clickable elements with "Git" or "Version Control" text
+    console.log('  Attempting to open Git panel...');
+    var strategy1 = await page.evaluate(function() {
+      var clicked = false;
+      var debugInfo = [];
+
+      // Look for tab-like elements with git text
+      var candidates = document.querySelectorAll(
+        '[role="tab"], [data-testid*="tab"], button, a, ' +
+        '[role="button"], [class*="Tab"], [class*="tool" i], ' +
+        '[class*="sidebar" i] button, [class*="sidebar" i] a, ' +
+        '[class*="nav" i] button, [class*="nav" i] a, ' +
+        '[class*="dock" i] button, [class*="dock" i] a, ' +
+        '[class*="panel" i] button, [class*="panel" i] a'
       );
-      for (var i = 0; i < tabs.length; i++) {
-        var text = (tabs[i].textContent || '').trim().toLowerCase();
-        if (text === 'git' || text === 'version control' || text === 'history') {
-          tabs[i].click();
-          return true;
+      for (var i = 0; i < candidates.length; i++) {
+        var el = candidates[i];
+        var text = (el.textContent || '').trim().toLowerCase();
+        var ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+        var title = (el.getAttribute('title') || '').toLowerCase();
+        var testId = el.getAttribute('data-testid') || '';
+
+        // Check text, aria-label, title for git-related content
+        var isGitRelated = (
+          text === 'git' ||
+          text === 'version control' ||
+          text === 'history' ||
+          text === 'commits' ||
+          ariaLabel.indexOf('git') >= 0 ||
+          ariaLabel.indexOf('version control') >= 0 ||
+          title.indexOf('git') >= 0 ||
+          title === 'version control' ||
+          testId.indexOf('git') >= 0 ||
+          testId.indexOf('version-control') >= 0
+        );
+
+        if (isGitRelated) {
+          debugInfo.push({
+            strategy: 'text/aria match',
+            tag: el.tagName,
+            text: text.substring(0, 50),
+            ariaLabel: ariaLabel.substring(0, 50),
+            title: title.substring(0, 50),
+            testId: testId,
+            className: (el.getAttribute('class') || '').substring(0, 100)
+          });
+          el.click();
+          clicked = true;
+          break;
         }
       }
-      var gitIcons = document.querySelectorAll(
-        '[data-testid="git-tab"], [data-testid*="version-control"], ' +
-        '[aria-label*="Git" i], [aria-label*="Version" i]'
-      );
-      if (gitIcons.length > 0) {
-        gitIcons[0].click();
-        return true;
-      }
-      return false;
+      return { clicked: clicked, debugInfo: debugInfo };
     });
 
-    if (!gitTabClicked) {
-      console.log('  Could not find Git tab, trying keyboard shortcut...');
-      await page.keyboard.press('Control+Shift+G');
-      await page.waitForTimeout(2000);
-    } else {
+    if (strategy1.clicked) {
+      console.log('  Strategy 1 (text/aria match): clicked Git element');
+      if (strategy1.debugInfo.length > 0) {
+        console.log('    Matched:', JSON.stringify(strategy1.debugInfo[0]));
+      }
       await page.waitForTimeout(3000);
+    }
+
+    // Verify Git panel opened by checking for commit-related content
+    gitPanelOpen = await this.verifyGitPanelOpen(page);
+
+    // Strategy 2: Look for SVG icons that look like git branch icons
+    if (!gitPanelOpen) {
+      console.log('  Strategy 1 did not open Git panel. Trying Strategy 2 (SVG icon detection)...');
+      var strategy2 = await page.evaluate(function() {
+        var clicked = false;
+        var debugInfo = [];
+        // Git branch icon typically has a fork/branch SVG path
+        // Look for buttons/links containing SVG with git-related paths
+        var svgContainers = document.querySelectorAll('button, a, [role="button"], [role="tab"]');
+        for (var i = 0; i < svgContainers.length; i++) {
+          var el = svgContainers[i];
+          var svg = el.querySelector('svg');
+          if (!svg) continue;
+          // Check if the SVG has git-branch-like content or the element has git hints
+          var svgContent = svg.outerHTML.toLowerCase();
+          var elText = (el.textContent || '').trim().toLowerCase();
+          var elTitle = (el.getAttribute('title') || '').toLowerCase();
+          var elAria = (el.getAttribute('aria-label') || '').toLowerCase();
+          // Git branch icon heuristic: path elements with fork shapes, or "gitBranch" in class/id
+          var hasGitHint = (
+            svgContent.indexOf('gitbranch') >= 0 ||
+            svgContent.indexOf('git-branch') >= 0 ||
+            svgContent.indexOf('branch') >= 0 ||
+            svgContent.indexOf('merge') >= 0 ||
+            svgContent.indexOf('fork') >= 0 ||
+            elTitle.indexOf('git') >= 0 ||
+            elAria.indexOf('git') >= 0 ||
+            elText === 'git'
+          );
+          if (hasGitHint) {
+            debugInfo.push({
+              strategy: 'svg icon',
+              tag: el.tagName,
+              text: elText.substring(0, 50),
+              title: elTitle,
+              ariaLabel: elAria,
+              svgPreview: svgContent.substring(0, 200)
+            });
+            el.click();
+            clicked = true;
+            break;
+          }
+        }
+        return { clicked: clicked, debugInfo: debugInfo };
+      });
+
+      if (strategy2.clicked) {
+        console.log('  Strategy 2 (SVG icon): clicked Git-related icon');
+        if (strategy2.debugInfo.length > 0) {
+          console.log('    Matched:', JSON.stringify(strategy2.debugInfo[0]));
+        }
+        await page.waitForTimeout(3000);
+        gitPanelOpen = await this.verifyGitPanelOpen(page);
+      }
+    }
+
+    // Strategy 3: Look for any element whose tooltip or nearby text references git
+    if (!gitPanelOpen) {
+      console.log('  Strategy 2 did not open Git panel. Trying Strategy 3 (broader scan)...');
+      var strategy3 = await page.evaluate(function() {
+        var clicked = false;
+        var debugInfo = [];
+        // Look through ALL buttons and interactive elements
+        var allInteractive = document.querySelectorAll(
+          'button, a, [role="button"], [role="tab"], ' +
+          '[tabindex="0"], [class*="clickable" i], [class*="Clickable"]'
+        );
+        for (var i = 0; i < allInteractive.length; i++) {
+          var el = allInteractive[i];
+          var allAttrs = '';
+          for (var a = 0; a < el.attributes.length; a++) {
+            allAttrs += el.attributes[a].name + '=' + el.attributes[a].value + ' ';
+          }
+          var allAttrsLower = allAttrs.toLowerCase();
+          if (allAttrsLower.indexOf('git') >= 0 || allAttrsLower.indexOf('version-control') >= 0 || allAttrsLower.indexOf('vcs') >= 0) {
+            debugInfo.push({
+              strategy: 'attr scan',
+              tag: el.tagName,
+              attrs: allAttrs.substring(0, 300),
+              text: (el.textContent || '').trim().substring(0, 50)
+            });
+            el.click();
+            clicked = true;
+            break;
+          }
+        }
+        return { clicked: clicked, debugInfo: debugInfo };
+      });
+
+      if (strategy3.clicked) {
+        console.log('  Strategy 3 (attr scan): clicked Git-related element');
+        if (strategy3.debugInfo.length > 0) {
+          console.log('    Matched:', JSON.stringify(strategy3.debugInfo[0]));
+        }
+        await page.waitForTimeout(3000);
+        gitPanelOpen = await this.verifyGitPanelOpen(page);
+      }
+    }
+
+    // Strategy 4: Keyboard shortcut
+    if (!gitPanelOpen) {
+      console.log('  No Git panel found via DOM. Trying keyboard shortcut (Ctrl+Shift+G)...');
+      await page.keyboard.press('Control+Shift+G');
+      await page.waitForTimeout(3000);
+      gitPanelOpen = await this.verifyGitPanelOpen(page);
+    }
+
+    // Strategy 5: Try clicking on the "Commits" sub-tab if we're in the Git panel but on wrong sub-tab
+    if (!gitPanelOpen) {
+      console.log('  Keyboard shortcut did not open Git panel. Trying to find Commits sub-tab...');
+      var clickedCommitsTab = await page.evaluate(function() {
+        var allEls = document.querySelectorAll('button, a, [role="tab"], [role="button"]');
+        for (var i = 0; i < allEls.length; i++) {
+          var text = (allEls[i].textContent || '').trim().toLowerCase();
+          if (text === 'commits' || text === 'commit history' || text === 'all commits') {
+            allEls[i].click();
+            return true;
+          }
+        }
+        return false;
+      });
+      if (clickedCommitsTab) {
+        console.log('  Found and clicked "Commits" sub-tab');
+        await page.waitForTimeout(2000);
+        gitPanelOpen = await this.verifyGitPanelOpen(page);
+      }
+    }
+
+    if (!gitPanelOpen) {
+      console.log('  WARNING: Could not verify Git panel is open. Will attempt commit extraction anyway.');
+      console.log('  Saving diagnostic DOM snapshot...');
+      await this.saveGitNavDebug(page);
+    } else {
+      console.log('  Git panel verified open.');
     }
 
     // Scroll to load all commits
@@ -756,40 +928,81 @@ export class ReplitScraper {
       console.log('  No relative timestamps found to click (may already be absolute)');
     }
 
-    // Save Git tab DOM debug
+    // Save Git tab DOM debug (comprehensive)
     try {
       var gitDebug = await page.evaluate(function() {
-        var body = document.body;
         var panels = document.querySelectorAll('[role="tabpanel"], [class*="git" i], [class*="commit" i], [class*="VersionControl"]');
         var panelInfo = [];
-        for (var pi = 0; pi < panels.length && pi < 5; pi++) {
+        for (var pi = 0; pi < panels.length && pi < 10; pi++) {
           var p = panels[pi];
           panelInfo.push({
             tag: p.tagName,
-            className: (p.getAttribute('class') || '').substring(0, 200),
+            className: (p.getAttribute('class') || '').substring(0, 300),
             role: p.getAttribute('role') || '',
             childCount: p.children.length,
             textPreview: (p.textContent || '').substring(0, 500),
-            outerHTMLPreview: p.outerHTML.substring(0, 500)
+            outerHTMLPreview: p.outerHTML.substring(0, 800)
           });
         }
         var commitEls = document.querySelectorAll('[class*="commit" i]');
         var commitInfo = [];
-        for (var ci = 0; ci < commitEls.length && ci < 10; ci++) {
+        for (var ci = 0; ci < commitEls.length && ci < 15; ci++) {
           var c = commitEls[ci];
           commitInfo.push({
             tag: c.tagName,
-            className: (c.getAttribute('class') || '').substring(0, 200),
+            className: (c.getAttribute('class') || '').substring(0, 300),
             childCount: c.children.length,
             textPreview: (c.textContent || '').substring(0, 300),
-            outerHTMLPreview: c.outerHTML.substring(0, 500)
+            outerHTMLPreview: c.outerHTML.substring(0, 800)
           });
         }
-        return { panels: panelInfo, commitElements: commitInfo, totalCommitEls: commitEls.length };
+
+        // Also capture list items and scrollable containers (possible commit list containers)
+        var listItems = document.querySelectorAll('li, [role="listitem"], [role="option"]');
+        var listInfo = [];
+        for (var li = 0; li < listItems.length && li < 20; li++) {
+          var item = listItems[li];
+          var parentCls = item.parentElement ? (item.parentElement.getAttribute('class') || '').substring(0, 100) : '';
+          listInfo.push({
+            tag: item.tagName,
+            className: (item.getAttribute('class') || '').substring(0, 200),
+            parentClassName: parentCls,
+            textPreview: (item.textContent || '').substring(0, 200)
+          });
+        }
+
+        // Capture scrollable containers (potential commit list wrappers)
+        var allEls = document.querySelectorAll('div, section, ul, ol');
+        var scrollable = [];
+        for (var si = 0; si < allEls.length && scrollable.length < 10; si++) {
+          var sel = allEls[si];
+          if (sel.scrollHeight > sel.clientHeight + 50 && sel.clientHeight > 50) {
+            scrollable.push({
+              tag: sel.tagName,
+              className: (sel.getAttribute('class') || '').substring(0, 200),
+              role: sel.getAttribute('role') || '',
+              scrollHeight: sel.scrollHeight,
+              clientHeight: sel.clientHeight,
+              childCount: sel.children.length,
+              textPreview: (sel.textContent || '').substring(0, 300)
+            });
+          }
+        }
+
+        return {
+          url: window.location.href,
+          panels: panelInfo,
+          commitElements: commitInfo,
+          totalCommitEls: commitEls.length,
+          listItems: listInfo,
+          scrollableContainers: scrollable,
+          totalListItems: listItems.length
+        };
       });
       var gitDebugPath = path.join('exports', 'git-tab-debug.json');
       fs.writeFileSync(gitDebugPath, JSON.stringify(gitDebug, null, 2));
       console.log(`  Git tab debug saved: ${gitDebugPath}`);
+      console.log(`  Debug: ${gitDebug.totalCommitEls} commit-class elements, ${gitDebug.totalListItems} list items, ${gitDebug.scrollableContainers.length} scrollable containers`);
     } catch (err) {
       console.log('  Note: Could not save Git tab debug info');
     }
@@ -798,6 +1011,7 @@ export class ReplitScraper {
     var commits: GitCommit[] = await page.evaluate(function() {
       var results = [];
 
+      // Try increasingly broad selectors to find commit elements
       var commitItems = document.querySelectorAll(
         '[class*="commit" i] [class*="message" i], ' +
         '[class*="CommitList"] li, [data-testid*="commit"], ' +
@@ -806,6 +1020,72 @@ export class ReplitScraper {
 
       if (commitItems.length === 0) {
         commitItems = document.querySelectorAll('[class*="commit" i]');
+      }
+
+      // Fallback: look for list items that appear to be git commits
+      // Must be inside a git-related ancestor OR contain commit-like metadata (hash, author)
+      if (commitItems.length === 0) {
+        var allLis = document.querySelectorAll('li');
+        var commitLis = [];
+        for (var ali = 0; ali < allLis.length; ali++) {
+          var liEl = allLis[ali];
+          var liText = (liEl.textContent || '').trim();
+          var hasTimestamp = /\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago/i.test(liText) ||
+            /\d{1,2}:\d{2}\s*(?:am|pm)/i.test(liText) ||
+            /(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d{1,2}/i.test(liText);
+          if (!hasTimestamp || liText.length < 10 || liText.length > 2000) continue;
+
+          // Require commit evidence: git-related ancestor, hash pattern, or commit-like keywords
+          var isInGitPanel = false;
+          var ancestor = liEl.parentElement;
+          while (ancestor) {
+            var ancestorCls = (ancestor.getAttribute('class') || '').toLowerCase();
+            if (ancestorCls.indexOf('git') >= 0 || ancestorCls.indexOf('commit') >= 0 ||
+                ancestorCls.indexOf('version') >= 0 || ancestorCls.indexOf('history') >= 0) {
+              isInGitPanel = true;
+              break;
+            }
+            ancestor = ancestor.parentElement;
+          }
+          var hasHash = /\b[0-9a-f]{7,40}\b/.test(liText);
+          var hasCommitKeyword = /(?:saved progress|checkpoint|transitioned|commit)/i.test(liText);
+
+          if (isInGitPanel || hasHash || hasCommitKeyword) {
+            commitLis.push(liEl);
+          }
+        }
+        if (commitLis.length > 0) {
+          commitItems = commitLis;
+        }
+      }
+
+      // Fallback: look for repeating containers inside a git-related ancestor with timestamps
+      if (commitItems.length === 0) {
+        var gitAncestors = document.querySelectorAll(
+          '[class*="git" i], [class*="commit" i], [class*="version" i], ' +
+          '[class*="history" i], [role="tabpanel"]'
+        );
+        for (var gi = 0; gi < gitAncestors.length; gi++) {
+          var gitRoot = gitAncestors[gi];
+          var childDivs = gitRoot.querySelectorAll('div');
+          var candidateDivs = [];
+          for (var di = 0; di < childDivs.length; di++) {
+            var div = childDivs[di];
+            if (div.children.length >= 1 && div.children.length <= 10) {
+              var divText = (div.textContent || '').trim();
+              var hasTs = /\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago/i.test(divText) ||
+                /\d{1,2}:\d{2}\s*(?:am|pm)/i.test(divText);
+              var parent = div.parentElement;
+              if (hasTs && parent && parent.children.length > 3) {
+                candidateDivs.push(div);
+              }
+            }
+          }
+          if (candidateDivs.length > 2) {
+            commitItems = candidateDivs;
+            break;
+          }
+        }
       }
 
       var seen = {};
@@ -895,6 +1175,154 @@ export class ReplitScraper {
     console.log(`  Git commits: ${commits.length} total, ${withTs} with absolute timestamps`);
 
     return commits;
+  }
+
+  private async verifyGitPanelOpen(page: Page): Promise<boolean> {
+    return await page.evaluate(function() {
+      // Check for commit-related DOM content that would indicate the Git panel is open
+      // 1. Look for elements with "commit" in their class/testid
+      var commitEls = document.querySelectorAll(
+        '[class*="commit" i], [data-testid*="commit"], ' +
+        '[class*="CommitList"], [class*="CommitEntry"]'
+      );
+      if (commitEls.length > 0) return true;
+
+      // 2. Look for version control / git panel identifiers
+      var gitPanels = document.querySelectorAll(
+        '[class*="VersionControl" i], [class*="git-panel" i], ' +
+        '[class*="GitPanel"], [class*="git-pane" i], [class*="GitPane"], ' +
+        '[data-testid*="git-panel"], [data-testid*="version-control"]'
+      );
+      if (gitPanels.length > 0) return true;
+
+      // 3. Check visible text for commit-related content
+      // Look for "Commit & push", "Commit all", or "commit history"
+      var buttons = document.querySelectorAll('button');
+      for (var i = 0; i < buttons.length; i++) {
+        var text = (buttons[i].textContent || '').trim().toLowerCase();
+        if (text.indexOf('commit') >= 0 && (text.indexOf('push') >= 0 || text.indexOf('all') >= 0)) {
+          return true;
+        }
+      }
+
+      // 4. Look for common Git UI elements: branch names, commit hashes, file diffs
+      var branchEls = document.querySelectorAll(
+        '[class*="branch" i], [class*="Branch"], ' +
+        '[class*="diff" i], [class*="Diff"]'
+      );
+      if (branchEls.length > 2) return true;
+
+      // 5. Check for "Changes" or "Commits" tabs within the panel
+      var subTabs = document.querySelectorAll('[role="tab"], button, a');
+      for (var j = 0; j < subTabs.length; j++) {
+        var subText = (subTabs[j].textContent || '').trim().toLowerCase();
+        if (subText === 'commits' || subText === 'changes' || subText === 'commit history') {
+          // Found a sub-tab, likely in Git panel
+          return true;
+        }
+      }
+
+      return false;
+    });
+  }
+
+  private async saveGitNavDebug(page: Page): Promise<void> {
+    try {
+      var navDebug = await page.evaluate(function() {
+        var result = {
+          url: window.location.href,
+          title: document.title,
+          allButtons: [],
+          allTabs: [],
+          allLinks: [],
+          sidebarElements: [],
+          bodyClasses: document.body.getAttribute('class') || '',
+          visiblePanels: []
+        };
+
+        // Capture all buttons with their text/attributes
+        var buttons = document.querySelectorAll('button, [role="button"]');
+        for (var i = 0; i < buttons.length && i < 100; i++) {
+          var btn = buttons[i];
+          result.allButtons.push({
+            tag: btn.tagName,
+            text: (btn.textContent || '').trim().substring(0, 80),
+            ariaLabel: btn.getAttribute('aria-label') || '',
+            title: btn.getAttribute('title') || '',
+            testId: btn.getAttribute('data-testid') || '',
+            className: (btn.getAttribute('class') || '').substring(0, 150),
+            hasSvg: !!btn.querySelector('svg'),
+            visible: btn.offsetParent !== null
+          });
+        }
+
+        // Capture all tab elements
+        var tabs = document.querySelectorAll('[role="tab"]');
+        for (var t = 0; t < tabs.length && t < 50; t++) {
+          var tab = tabs[t];
+          result.allTabs.push({
+            text: (tab.textContent || '').trim().substring(0, 80),
+            ariaLabel: tab.getAttribute('aria-label') || '',
+            ariaSelected: tab.getAttribute('aria-selected') || '',
+            className: (tab.getAttribute('class') || '').substring(0, 150),
+            testId: tab.getAttribute('data-testid') || ''
+          });
+        }
+
+        // Capture sidebar-like elements
+        var sidebars = document.querySelectorAll(
+          '[class*="sidebar" i], [class*="Sidebar"], ' +
+          '[class*="dock" i], [class*="Dock"], ' +
+          '[class*="tools" i], [class*="Tools"], ' +
+          '[class*="nav" i][class*="left" i], [class*="NavLeft"]'
+        );
+        for (var s = 0; s < sidebars.length && s < 10; s++) {
+          var sb = sidebars[s];
+          var sbChildren = [];
+          for (var sc = 0; sc < sb.children.length && sc < 20; sc++) {
+            var child = sb.children[sc];
+            sbChildren.push({
+              tag: child.tagName,
+              text: (child.textContent || '').trim().substring(0, 60),
+              className: (child.getAttribute('class') || '').substring(0, 100),
+              ariaLabel: child.getAttribute('aria-label') || '',
+              title: child.getAttribute('title') || ''
+            });
+          }
+          result.sidebarElements.push({
+            className: (sb.getAttribute('class') || '').substring(0, 150),
+            childCount: sb.children.length,
+            children: sbChildren
+          });
+        }
+
+        // Capture visible panels
+        var panels = document.querySelectorAll('[role="tabpanel"], [class*="panel" i], [class*="Panel"]');
+        for (var p = 0; p < panels.length && p < 10; p++) {
+          var panel = panels[p];
+          if (panel.offsetParent !== null) {
+            result.visiblePanels.push({
+              tag: panel.tagName,
+              className: (panel.getAttribute('class') || '').substring(0, 150),
+              role: panel.getAttribute('role') || '',
+              textPreview: (panel.textContent || '').substring(0, 300)
+            });
+          }
+        }
+
+        return result;
+      });
+
+      var debugPath = path.join('exports', 'git-nav-debug.json');
+      try { fs.mkdirSync('exports', { recursive: true }); } catch(e) {}
+      fs.writeFileSync(debugPath, JSON.stringify(navDebug, null, 2));
+      console.log(`  Navigation debug saved: ${debugPath}`);
+      console.log(`  Current URL: ${navDebug.url}`);
+      console.log(`  Buttons found: ${navDebug.allButtons.length}, Tabs found: ${navDebug.allTabs.length}`);
+      console.log(`  Sidebar elements: ${navDebug.sidebarElements.length}`);
+    } catch (err) {
+      console.log('  Could not save navigation debug info');
+    }
   }
 
   private async clickOneRelativeTimestamp(page: Page): Promise<boolean> {
