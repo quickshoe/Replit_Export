@@ -105,13 +105,9 @@ async function main() {
       console.log('Already logged in (using saved session).');
     }
 
-    // After login is confirmed, minimize the browser window unless --verbose
-    if (!isVerbose) {
-      console.log('Minimizing browser window (use --verbose to keep it visible)...');
-      await scraper.minimizeWindow();
-    } else {
-      console.log('Verbose mode: browser window will stay visible.');
-      await scraper.restoreWindow();
+    // Browser stays visible for proper rendering (minimized browsers cause incomplete scraping)
+    if (isVerbose) {
+      console.log('Verbose mode: detailed per-item logging enabled.');
     }
 
     let urls: string[] = options.urls || [];

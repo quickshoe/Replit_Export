@@ -15,9 +15,9 @@ Ask before making major changes.
 The tool is implemented as a Node.js CLI application, leveraging Playwright for browser automation to interact with the Replit web interface. It maintains login state via cookies without storing user passwords.
 
 **Core Functionality:**
-- **Browser Automation:** Playwright operates in a headed, minimized browser instance. It restores the window for user interaction during login if necessary, then minimizes it again. Verbose mode keeps the browser visible for live DOM operation viewing.
+- **Browser Automation:** Playwright operates in a headed, visible browser instance (minimization was removed because it caused incomplete DOM rendering and missed elements). The window restores for user interaction during login if necessary. Verbose mode enables detailed per-item logging.
 - **Data Scraping Pipeline:** The scraper navigates to Replit URLs, auto-scrolls, and processes DOM elements through a multi-step pipeline:
-    1.  **Agent Idle Check:** Verifies the Replit Agent is idle before proceeding, waiting and warning the user if the agent is active.
+    1.  **Agent Idle Check:** Uses a two-tier detection strategy: (1) Primary: opens the Git tab and checks the top commit description — "Transitioned from Plan to Build mode" means agent is running, "Saved progress at the end of the loop" means likely idle. (2) Secondary: if ambiguous, checks for "Working" text at bottom of chat, then performs a 5-second DOM snapshot comparison to detect live typing/changes. Waits up to 10 minutes for the agent to finish if active.
     2.  **Load & Expand:** Scrolls to load full chat history and expands all relevant sections like "X messages & X actions," "Checkpoint made," and "Worked for X."
     3.  **Git Tab Navigation & Timestamp Conversion:** Navigates to the Git tab, scrolls to load all commits, and clicks a single relative timestamp to convert all UI timestamps to absolute format. Extracts commit messages and timestamps.
     4.  **Return to Chat:** Navigates back to the chat panel.
@@ -37,7 +37,7 @@ The tool is implemented as a Node.js CLI application, leveraging Playwright for 
 - **Unified Re-Indexing:** All extracted entry types (messages, checkpoints, work entries) are combined, sorted by their original DOM order, and assigned sequential indices for unique identification and chronological consistency.
 
 **Technical Implementations:**
-- **Playwright `page.evaluate` Context:** CRITICAL: All code inside `page.evaluate()` blocks MUST be pure ES5 JavaScript with NO TypeScript syntax (`as` casts, typed declarations like `var x: Type`, etc.). Functions passed to `page.evaluate` are serialized and run in the browser context where esbuild helpers (like `__name`) do not exist. TypeScript syntax causes esbuild to inject helper functions that crash at runtime. LSP warnings within these blocks are expected and non-blocking (tsc --noEmit passes cleanly).
+- **Playwright `page.evaluate` Context:** CRITICAL: All code inside `page.evaluate()` blocks MUST be pure ES5 JavaScript with NO TypeScript syntax (`as` casts, typed declarations like `var x: Type`, etc.) AND NO function expressions assigned to variables (e.g., `var fn = function(x) {...}` causes esbuild to inject `__name` helper). Functions passed to `page.evaluate` are serialized and run in the browser context where esbuild helpers (like `__name`) do not exist. Instead of function expressions, inline the logic directly or use regex patterns inline. LSP warnings within these blocks are expected and non-blocking (tsc --noEmit passes cleanly).
 - **Navigation Strategy:** Uses `waitUntil: 'domcontentloaded'` for navigation due to Replit's continuous WebSocket connections.
 - **Timestamp Extraction:** Leverages specific DOM patterns and a prioritized search strategy for robust timestamp capture.
 - **DOM Pattern Recognition:** Utilizes Replit-specific DOM classes and attributes for identifying and interacting with content.

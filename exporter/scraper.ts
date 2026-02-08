@@ -32,7 +32,6 @@ export class ReplitScraper {
     console.log('Launching browser...');
     this.browser = await chromium.launch({
       headless: false,
-      args: ['--start-minimized'],
     });
 
     if (fs.existsSync(SESSION_FILE)) {
@@ -435,160 +434,204 @@ export class ReplitScraper {
     return result;
   }
 
-  private async checkAgentWorking(page: Page): Promise<{ working: boolean; debug: string }> {
-    return await page.evaluate(function() {
-      // Detection strategy uses a precise signal from the user:
-      // The agent chat input area has a submit button (up arrow) when idle,
-      // and a stop button (square icon) when the agent is running.
-      // The app-level stop button at the top of the page is deliberately IGNORED.
-      //
-      // We combine two signals:
-      //  1. Stop button in the chat input area (primary — definitive "working")
-      //  2. Last message pattern (secondary — confirms idle or supports working)
+  private async checkAgentWorkingViaGit(page: Page): Promise<{ working: boolean; debug: string; checked: boolean }> {
+    // Primary detection: check the top (most recent) git commit description.
+    // "Transitioned from Plan to Build mode" => agent is likely running
+    // "Saved progress at the end of the loop" => agent likely idle (needs secondary check)
 
-      // Step 1: Find the agent chat panel using broad class patterns.
-      var panelSelectors = [
-        '[class*="AgentChat"]', '[class*="agentChat"]', '[class*="agent-chat"]',
-        '[class*="ChatPanel"]', '[class*="chatPanel"]', '[class*="chat-panel"]',
-        '[data-testid*="chat"]',
-        '[class*="AiChat"]', '[class*="aiChat"]'
-      ];
-      var chatPanel = null;
-      for (var ps = 0; ps < panelSelectors.length; ps++) {
-        chatPanel = document.querySelector(panelSelectors[ps]);
-        if (chatPanel) break;
-      }
-
-      // If we can't find a named chat panel, fall back to searching the whole document
-      var searchRoot = chatPanel || document;
-
-      // Step 2: Find a form containing a textarea (the chat input area).
-      var allForms = searchRoot.querySelectorAll('form');
-      var chatForm = null;
-      for (var f = 0; f < allForms.length; f++) {
-        if (allForms[f].querySelector('textarea')) {
-          chatForm = allForms[f];
-          break;
-        }
-      }
-      // Fallback: find textarea anywhere in search root, walk up to find button container
-      if (!chatForm) {
-        var textareas = searchRoot.querySelectorAll('textarea');
-        for (var t = 0; t < textareas.length; t++) {
-          var parent = textareas[t].parentElement;
-          while (parent && parent !== searchRoot) {
-            if (parent.querySelector('button')) {
-              chatForm = parent;
-              break;
-            }
-            parent = parent.parentElement;
-          }
-          if (chatForm) break;
-        }
-      }
-
-      // Step 3: Check the submit/stop button in the chat input area
-      var stopButtonFound = false;
-      if (chatForm) {
-        var btns = chatForm.querySelectorAll('button');
-        for (var b = 0; b < btns.length; b++) {
-          var btn = btns[b];
-          var rect = btn.getBoundingClientRect();
-          if (rect.width <= 0 || rect.height <= 0) continue;
-
-          // Check aria-label for "stop" — safe to use indexOf here because
-          // we're already scoped to buttons inside the chat input form
-          var ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
-          if (ariaLabel.indexOf('stop') >= 0) {
-            stopButtonFound = true;
-            break;
-          }
-
-          // Check for stop icon: SVG with rect only (square/stop icon)
-          // vs submit icon which has path elements (arrow shape)
-          var svgs = btn.querySelectorAll('svg');
-          for (var s = 0; s < svgs.length; s++) {
-            var svg = svgs[s];
-            var hasRect = svg.querySelector('rect');
-            var hasPath = svg.querySelector('path');
-            var hasLine = svg.querySelector('line');
-            var hasPolyline = svg.querySelector('polyline');
-            if (hasRect && !hasPath && !hasLine && !hasPolyline) {
-              stopButtonFound = true;
-              break;
-            }
-          }
-          if (stopButtonFound) break;
-        }
-      }
-
-      // If we found a stop button in the chat input, agent is definitely working
-      if (stopButtonFound) return { working: true, debug: 'Stop button found in chat input area' };
-
-      // Step 4: Check the last message as a secondary signal.
-      // If the last message is "Worked for X" / "Time worked", agent is idle.
-      // If the chat form wasn't found (ambiguous state), use this to decide.
-      // Look for event/message containers within the chat panel.
-      var containers = searchRoot.querySelectorAll(
-        '[class*="event" i], [class*="Event"], [class*="message" i], [class*="Message"], ' +
-        '[class*="ChatItem"], [class*="chatItem"], [class*="FeedItem"], [class*="feedItem"]'
+    // First, try to open the Git panel temporarily
+    var gitClicked = await page.evaluate(function() {
+      var candidates = document.querySelectorAll(
+        '[role="tab"], [data-testid*="tab"], button, a, ' +
+        '[role="button"], [class*="Tab"], [class*="tool" i]'
       );
-      if (containers.length > 0) {
-        // Check the last few containers (the very last might be a wrapper)
-        var checkCount = Math.min(3, containers.length);
-        for (var c = containers.length - 1; c >= containers.length - checkCount; c--) {
-          var text = (containers[c].textContent || '').trim();
-          if (text.length < 5) continue; // Skip empty/trivial containers
-          // "Worked for X" or "Time worked" = agent finished = idle
-          if (/worked\s+for\s+/i.test(text) || /time\s+worked/i.test(text)) {
-            return { working: false, debug: 'Last message matches "Worked for" pattern — idle' };
-          }
-          // If we found a substantive last message that is NOT "Worked for",
-          // we can't be sure — could be a user message or agent still typing.
-          // Without the stop button signal, assume idle (avoid false positives).
-          break;
+      for (var i = 0; i < candidates.length; i++) {
+        var el = candidates[i];
+        var text = (el.textContent || '').trim().toLowerCase();
+        var ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+        var title = (el.getAttribute('title') || '').toLowerCase();
+        var testId = el.getAttribute('data-testid') || '';
+        var isGitRelated = (
+          text === 'git' ||
+          ariaLabel.indexOf('git') >= 0 ||
+          title.indexOf('git') >= 0 ||
+          testId.indexOf('git') >= 0
+        );
+        if (isGitRelated) {
+          el.click();
+          return true;
         }
       }
-
-      var formStatus = chatForm ? 'chat form found' : 'chat form NOT found';
-      return { working: false, debug: 'No stop button detected (' + formStatus + ') — assuming idle' };
+      return false;
     });
+
+    if (!gitClicked) {
+      return { working: false, debug: 'Could not open Git tab for pre-check', checked: false };
+    }
+
+    await page.waitForTimeout(2000);
+
+    // Read the top commit description
+    var topCommit = await page.evaluate(function() {
+      // Look for commit message elements
+      var msgSelectors = [
+        '[class*="commit" i] [class*="message" i]',
+        '[class*="commit" i] [class*="description" i]',
+        '[class*="commit" i] [class*="summary" i]',
+        '[class*="CommitList"] li'
+      ];
+      for (var s = 0; s < msgSelectors.length; s++) {
+        var els = document.querySelectorAll(msgSelectors[s]);
+        if (els.length > 0) {
+          var firstText = (els[0].textContent || '').trim();
+          if (firstText.length > 3) {
+            return firstText;
+          }
+        }
+      }
+      // Broader fallback: find elements with "commit" class and get first text
+      var allCommit = document.querySelectorAll('[class*="commit" i]');
+      for (var c = 0; c < allCommit.length; c++) {
+        var children = allCommit[c].children;
+        for (var ch = 0; ch < children.length; ch++) {
+          var childText = (children[ch].textContent || '').trim();
+          if (childText.length > 5 && childText.length < 500) {
+            return childText;
+          }
+        }
+      }
+      return null;
+    });
+
+    if (!topCommit) {
+      return { working: false, debug: 'Git tab opened but no commit messages found', checked: false };
+    }
+
+    var topLower = topCommit.toLowerCase();
+    if (topLower.indexOf('transitioned from plan to build') >= 0) {
+      return { working: true, debug: 'Top commit: "' + topCommit.substring(0, 60) + '" — agent is building', checked: true };
+    }
+    if (topLower.indexOf('saved progress at the end of the loop') >= 0) {
+      // Likely idle, but need secondary check (user might have typed in build mode)
+      return { working: false, debug: 'Top commit: "Saved progress" — likely idle, needs secondary check', checked: true };
+    }
+
+    // Some other commit message — could be user-initiated, treat as needs secondary check
+    return { working: false, debug: 'Top commit: "' + topCommit.substring(0, 60) + '" — uncertain, needs secondary check', checked: true };
+  }
+
+  private async checkAgentWorkingViaDom(page: Page): Promise<{ working: boolean; debug: string }> {
+    // Secondary detection: check for "Working" text at bottom of chat,
+    // or do a 5-second DOM snapshot comparison to detect live changes.
+
+    // First navigate back to chat if needed
+    var chatClicked = await page.evaluate(function() {
+      var tabs = document.querySelectorAll(
+        '[role="tab"], [data-testid*="tab"], button[class*="tab" i], ' +
+        'a[class*="tab" i], [class*="Tab"]'
+      );
+      for (var i = 0; i < tabs.length; i++) {
+        var text = (tabs[i].textContent || '').trim().toLowerCase();
+        if (text === 'chat' || text === 'agent' || text === 'ai' ||
+            text === 'agent chat' || text === 'ai chat') {
+          tabs[i].click();
+          return true;
+        }
+      }
+      return false;
+    });
+
+    if (chatClicked) {
+      await page.waitForTimeout(1500);
+    }
+
+    // Check 1: Look for "Working" text at the very bottom of the chat
+    var workingText = await page.evaluate(function() {
+      var body = document.body;
+      if (!body) return null;
+      // Check the last visible text in the chat area
+      var allText = body.innerText || '';
+      var lines = allText.split('\n');
+      // Check last 10 non-empty lines for "Working" indicator
+      var count = 0;
+      for (var i = lines.length - 1; i >= 0 && count < 10; i--) {
+        var line = lines[i].trim();
+        if (line.length === 0) continue;
+        count++;
+        if (line === 'Working' || line === 'Working...' || line === 'Working…') {
+          return line;
+        }
+      }
+      return null;
+    });
+
+    if (workingText) {
+      return { working: true, debug: 'Found "' + workingText + '" text at bottom of chat — agent is working' };
+    }
+
+    // Check 2: 5-second DOM snapshot comparison to detect live typing
+    var snapshot1 = await page.evaluate(function() {
+      var containers = document.querySelectorAll(
+        '[class*="eventContainer"], [class*="EventContainer"], [data-event-type], ' +
+        '[class*="event" i], [class*="Event"], [class*="message" i], [class*="Message"]'
+      );
+      var lastFew = [];
+      var start = Math.max(0, containers.length - 5);
+      for (var i = start; i < containers.length; i++) {
+        lastFew.push((containers[i].textContent || '').trim().substring(0, 500));
+      }
+      return { count: containers.length, lastContent: lastFew.join('|||') };
+    });
+
+    await page.waitForTimeout(5000);
+
+    var snapshot2 = await page.evaluate(function() {
+      var containers = document.querySelectorAll(
+        '[class*="eventContainer"], [class*="EventContainer"], [data-event-type], ' +
+        '[class*="event" i], [class*="Event"], [class*="message" i], [class*="Message"]'
+      );
+      var lastFew = [];
+      var start = Math.max(0, containers.length - 5);
+      for (var i = start; i < containers.length; i++) {
+        lastFew.push((containers[i].textContent || '').trim().substring(0, 500));
+      }
+      return { count: containers.length, lastContent: lastFew.join('|||') };
+    });
+
+    if (snapshot2.count !== snapshot1.count || snapshot2.lastContent !== snapshot1.lastContent) {
+      return { working: true, debug: 'Chat DOM changed during 5s observation (' + snapshot1.count + ' -> ' + snapshot2.count + ' containers) — agent is working' };
+    }
+
+    return { working: false, debug: 'No "Working" text and no DOM changes in 5s — agent appears idle' };
   }
 
   private async waitForAgentIdle(page: Page): Promise<void> {
     console.log('\nPre-check: Checking if Replit Agent is currently working...');
 
-    // Wait for the chat panel or any interactive element to appear in the DOM before checking.
-    // We use multiple selector groups with increasing broadness:
-    //  1. Named chat panel classes
-    //  2. Textarea/form (the chat input area itself)
-    //  3. Event containers (already-rendered chat messages)
-    const chatPanelSelectors = [
-      '[class*="AgentChat"]', '[class*="agentChat"]', '[class*="agent-chat"]',
-      '[class*="ChatPanel"]', '[class*="chatPanel"]', '[class*="chat-panel"]',
-      '[data-testid*="chat"]',
-      '[class*="AiChat"]', '[class*="aiChat"]',
-      'form:has(textarea)', 'textarea',
+    // Wait for the page to have some interactive content before checking
+    const panelSelectors = [
       '[class*="eventContainer"]', '[class*="EventContainer"]', '[data-event-type]',
+      '[class*="AgentChat"]', '[class*="ChatPanel"]', '[data-testid*="chat"]',
+      '[class*="Tab"]', '[role="tab"]',
     ];
-    const chatPanelSelector = chatPanelSelectors.join(', ');
+    const panelSelector = panelSelectors.join(', ');
 
-    let chatPanelFound = false;
+    let panelFound = false;
     for (let attempt = 0; attempt < 5; attempt++) {
       try {
-        await page.waitForSelector(chatPanelSelector, { timeout: 8000 });
-        chatPanelFound = true;
+        await page.waitForSelector(panelSelector, { timeout: 8000 });
+        panelFound = true;
         break;
       } catch {
         if (attempt < 4) {
-          console.log(`  Waiting for chat panel to load... (attempt ${attempt + 1}/5)`);
+          console.log(`  Waiting for page content to load... (attempt ${attempt + 1}/5)`);
           await page.waitForTimeout(3000);
         }
       }
     }
 
-    if (!chatPanelFound) {
-      console.log('  Chat panel not found after waiting. Assuming agent is idle.');
+    if (!panelFound) {
+      console.log('  Page content not found after waiting. Assuming agent is idle.');
       console.log('\n========================================');
       console.log('IMPORTANT: Do NOT use Replit Agent while the scraper is running.');
       console.log('Agent activity during scraping will cause unreliable results.');
@@ -596,46 +639,69 @@ export class ReplitScraper {
       return;
     }
 
-    var result = await this.checkAgentWorking(page);
-    console.log('  Detection: ' + result.debug);
+    // Primary check: Git tab commit description
+    var gitResult = await this.checkAgentWorkingViaGit(page);
+    console.log('  Git check: ' + gitResult.debug);
 
-    if (!result.working) {
-      console.log('  Replit Agent is idle. Proceeding with scraping.');
-      console.log('\n========================================');
-      console.log('IMPORTANT: Do NOT use Replit Agent while the scraper is running.');
-      console.log('Agent activity during scraping will cause unreliable results.');
-      console.log('========================================\n');
+    if (gitResult.working) {
+      // Agent is definitely working (top commit = "Transitioned from Plan to Build")
+      await this.waitForAgentToFinish(page);
       return;
     }
 
+    // If git check was inconclusive or showed "Saved progress", do secondary DOM check
+    if (gitResult.checked) {
+      console.log('  Running secondary DOM check (5-second observation)...');
+    } else {
+      console.log('  Git check inconclusive. Running DOM-based detection...');
+    }
+
+    // Navigate back to chat for DOM check
+    var domResult = await this.checkAgentWorkingViaDom(page);
+    console.log('  DOM check: ' + domResult.debug);
+
+    if (domResult.working) {
+      await this.waitForAgentToFinish(page);
+      return;
+    }
+
+    console.log('  Replit Agent is idle. Proceeding with scraping.');
+    console.log('\n========================================');
+    console.log('IMPORTANT: Do NOT use Replit Agent while the scraper is running.');
+    console.log('Agent activity during scraping will cause unreliable results.');
+    console.log('========================================\n');
+  }
+
+  private async waitForAgentToFinish(page: Page): Promise<void> {
     console.log('\n========================================');
     console.log('WARNING: Replit Agent is currently working!');
     console.log('The scraper cannot run while the agent is active.');
-    console.log('Please do NOT interact with the agent during scraping.');
     console.log('Waiting for the agent to finish...');
     console.log('========================================\n');
 
     var waitStart = Date.now();
     var maxWaitMs = 600000; // 10 minute max wait
-    var pollIntervalMs = 5000;
     var lastLogTime = Date.now();
 
     while (Date.now() - waitStart < maxWaitMs) {
-      await page.waitForTimeout(pollIntervalMs);
+      await page.waitForTimeout(10000);
 
-      var pollResult = await this.checkAgentWorking(page);
-
-      if (!pollResult.working) {
-        var elapsedSec = Math.round((Date.now() - waitStart) / 1000);
-        console.log(`\n  Replit Agent finished working. (Waited ${elapsedSec}s)`);
-        console.log('  Proceeding with scraping.\n');
-        console.log('========================================');
-        console.log('IMPORTANT: Do NOT use Replit Agent while the scraper is running.');
-        console.log('Agent activity during scraping will cause unreliable results.');
-        console.log('========================================\n');
-        // Give the DOM a moment to settle after agent finishes
-        await page.waitForTimeout(3000);
-        return;
+      // Re-check via git first (fast check for "Saved progress")
+      var gitPoll = await this.checkAgentWorkingViaGit(page);
+      if (gitPoll.checked && !gitPoll.working) {
+        // Git says likely idle — confirm with DOM check
+        var domPoll = await this.checkAgentWorkingViaDom(page);
+        if (!domPoll.working) {
+          var elapsedSec = Math.round((Date.now() - waitStart) / 1000);
+          console.log(`\n  Replit Agent finished working. (Waited ${elapsedSec}s)`);
+          console.log('  Proceeding with scraping.\n');
+          console.log('========================================');
+          console.log('IMPORTANT: Do NOT use Replit Agent while the scraper is running.');
+          console.log('Agent activity during scraping will cause unreliable results.');
+          console.log('========================================\n');
+          await page.waitForTimeout(3000);
+          return;
+        }
       }
 
       // Log progress every 15 seconds
@@ -1337,13 +1403,6 @@ export class ReplitScraper {
       var absoluteDatePattern = /(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d{1,2},?\s+\d{4}/i;
       var absoluteNumericDatePattern = /\d{1,2}\/\d{1,2}\/\d{2,4}/;
 
-      var isAbsolute = function(text) {
-        return absoluteTimePattern.test(text) || absoluteDatePattern.test(text) || absoluteNumericDatePattern.test(text);
-      };
-      var isRelative = function(text) {
-        return relativePattern.test(text) || justNowPattern.test(text);
-      };
-
       // Step 1: Find commit container elements (not message sub-elements)
       // Use container-level selectors first
       var commitContainers = document.querySelectorAll(
@@ -1353,12 +1412,10 @@ export class ReplitScraper {
 
       // If no container-level matches, try broader commit class and resolve upward
       if (commitContainers.length === 0) {
-        // Find message elements and resolve to their commit container parent
         var msgEls = document.querySelectorAll('[class*="commit" i] [class*="message" i]');
         var containers = [];
         var seenContainers = {};
         for (var m = 0; m < msgEls.length; m++) {
-          // Walk up to find the commit container
           var parent = msgEls[m];
           while (parent) {
             var cls = (parent.getAttribute('class') || '').toLowerCase();
@@ -1374,13 +1431,11 @@ export class ReplitScraper {
           }
         }
         if (containers.length === 0) {
-          // Last resort: all commit-class elements
           var allCommit = document.querySelectorAll('[class*="commit" i]');
           for (var ac = 0; ac < allCommit.length; ac++) {
             containers.push(allCommit[ac]);
           }
         }
-        // Convert to a NodeList-like structure for uniform iteration
         commitContainers = containers;
       }
 
@@ -1388,7 +1443,6 @@ export class ReplitScraper {
       for (var i = 0; i < commitContainers.length; i++) {
         var commitEl = commitContainers[i];
 
-        // Verify this entry has a description (commit message)
         var hasDescription = false;
         var msgEl = commitEl.querySelector(
           '[class*="message" i], [class*="description" i], ' +
@@ -1402,7 +1456,8 @@ export class ReplitScraper {
           for (var c = 0; c < children.length; c++) {
             var childText = (children[c].textContent || '').trim();
             if (childText.length > 5 && childText.length < 500 &&
-                !isRelative(childText) && !isAbsolute(childText)) {
+                !(relativePattern.test(childText) || justNowPattern.test(childText)) &&
+                !(absoluteTimePattern.test(childText) || absoluteDatePattern.test(childText) || absoluteNumericDatePattern.test(childText))) {
               hasDescription = true;
               break;
             }
@@ -1417,10 +1472,10 @@ export class ReplitScraper {
           var nextSib = commitEl.nextElementSibling;
           if (nextSib) {
             var sibText = (nextSib.textContent || '').trim();
-            if (isRelative(sibText)) {
+            if (relativePattern.test(sibText) || justNowPattern.test(sibText)) {
               return { status: 'relative', text: sibText, index: i, useSibling: true };
             }
-            if (isAbsolute(sibText)) {
+            if (absoluteTimePattern.test(sibText) || absoluteDatePattern.test(sibText) || absoluteNumericDatePattern.test(sibText)) {
               return { status: 'absolute', text: sibText, index: i, useSibling: false };
             }
           }
@@ -1430,10 +1485,10 @@ export class ReplitScraper {
         var timeText = (timeEl.textContent || '').trim();
 
         // Classify the timestamp line
-        if (isRelative(timeText)) {
+        if (relativePattern.test(timeText) || justNowPattern.test(timeText)) {
           return { status: 'relative', text: timeText, index: i, useSibling: false };
         }
-        if (isAbsolute(timeText)) {
+        if (absoluteTimePattern.test(timeText) || absoluteDatePattern.test(timeText) || absoluteNumericDatePattern.test(timeText)) {
           return { status: 'absolute', text: timeText, index: i, useSibling: false };
         }
 
@@ -1534,10 +1589,6 @@ export class ReplitScraper {
       var absoluteDatePattern = /(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d{1,2},?\s+\d{4}/i;
       var absoluteNumericDatePattern = /\d{1,2}\/\d{1,2}\/\d{2,4}/;
 
-      var isAbsoluteV = function(text) {
-        return absoluteTimePattern.test(text) || absoluteDatePattern.test(text) || absoluteNumericDatePattern.test(text);
-      };
-
       var commitContainers = document.querySelectorAll(
         '[class*="CommitList"] li, [data-testid*="commit"], ' +
         '[class*="commit-entry" i], [class*="CommitEntry"]'
@@ -1571,7 +1622,7 @@ export class ReplitScraper {
         var timeEl = commitEl.querySelector('time, [class*="time" i], [class*="date" i], [class*="ago" i], [class*="Timestamp"]');
         if (timeEl) {
           var text = (timeEl.textContent || '').trim();
-          if (isAbsoluteV(text)) {
+          if (absoluteTimePattern.test(text) || absoluteDatePattern.test(text) || absoluteNumericDatePattern.test(text)) {
             return { converted: true, text: text };
           }
           if (relativePattern.test(text) || justNowPattern.test(text)) {
@@ -1582,11 +1633,10 @@ export class ReplitScraper {
             return { converted: true, text: dtAttr };
           }
         }
-        // Also check sibling
         var nextSib = commitEl.nextElementSibling;
         if (nextSib) {
           var sibText = (nextSib.textContent || '').trim();
-          if (isAbsoluteV(sibText)) {
+          if (absoluteTimePattern.test(sibText) || absoluteDatePattern.test(sibText) || absoluteNumericDatePattern.test(sibText)) {
             return { converted: true, text: sibText };
           }
         }
