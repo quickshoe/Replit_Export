@@ -776,44 +776,11 @@ export class ReplitScraper {
         if (cpRealTsMatch) cpTimestamp = cpRealTsMatch[1];
         if (!cpTimestamp) cpTimestamp = timestamp;
 
-        var cpDescription = '';
-        var cpDescMatchAbs = rawText.match(/Checkpoint\s+made\s*([\s\S]*?)(?:\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4}|\s*Rollback|\s*Preview|\s*Changes|$)/i);
-        if (cpDescMatchAbs && cpDescMatchAbs[1]) {
-          var descCandidate = cpDescMatchAbs[1].trim();
-          if (descCandidate && !descCandidate.match(/^\d+\s+(?:second|minute|hour|day|week|month|year)s?\s*ago\s*$/i)) {
-            cpDescription = descCandidate;
-          }
-        }
-        if (!cpDescription) {
-          var cpDescMatchRel = rawText.match(/Checkpoint\s+made[\s\S]*?ago\s*([\s\S]*?)(?:\d{1,2}:\d{2}\s*(?:am|pm)|\s*Rollback|\s*Preview|\s*Changes|$)/i);
-          if (cpDescMatchRel && cpDescMatchRel[1]) cpDescription = cpDescMatchRel[1].trim();
-        }
-        if (!cpDescription) {
-          cpDescription = rawText
-            .replace(/Checkpoint\s+made\s*/i, '')
-            .replace(/\d+\s+(?:second|minute|hour|day|week|month|year)s?\s*ago\s*/i, '')
-            .replace(/\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4}/gi, '')
-            .replace(/Rollback\s+here/gi, '').replace(/Preview/gi, '').replace(/Changes/gi, '').trim();
-        }
-
-        var relTimeInDesc = cpDescription.match(/^(\d+\s+(?:second|minute|hour|day|week|month|year)s?\s*ago)([\s\S]*)/i);
-        if (relTimeInDesc) {
-          var relPart = relTimeInDesc[1].trim();
-          var descPart = relTimeInDesc[2].trim();
-          if (descPart.length > 0) {
-            cpDescription = relPart + ' - ' + descPart;
-          } else {
-            cpDescription = relPart;
-          }
-        }
-        var absTimeInDesc = cpDescription.match(/^(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})([\s\S]*)/i);
-        if (absTimeInDesc) {
-          var absPart = absTimeInDesc[1].trim();
-          var descAfterAbs = absTimeInDesc[2].trim();
-          if (descAfterAbs.length > 0) {
-            cpDescription = descAfterAbs;
-          }
-        }
+        var cpDescription = rawText
+          .replace(/Checkpoint\s+made\s*/i, '')
+          .replace(/\d+\s+(?:second|minute|hour|day|week|month|year)s?\s*ago\s*/gi, '')
+          .replace(/\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4}/gi, '')
+          .replace(/Rollback\s+here/gi, '').replace(/Preview/gi, '').replace(/Changes/gi, '').trim();
 
         var costMatch = rawText.match(/\$[\d.]+/);
         return {
