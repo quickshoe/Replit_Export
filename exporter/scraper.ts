@@ -796,6 +796,25 @@ export class ReplitScraper {
             .replace(/Rollback\s+here/gi, '').replace(/Preview/gi, '').replace(/Changes/gi, '').trim();
         }
 
+        var relTimeInDesc = cpDescription.match(/^(\d+\s+(?:second|minute|hour|day|week|month|year)s?\s*ago)([\s\S]*)/i);
+        if (relTimeInDesc) {
+          var relPart = relTimeInDesc[1].trim();
+          var descPart = relTimeInDesc[2].trim();
+          if (descPart.length > 0) {
+            cpDescription = relPart + ' - ' + descPart;
+          } else {
+            cpDescription = relPart;
+          }
+        }
+        var absTimeInDesc = cpDescription.match(/^(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})([\s\S]*)/i);
+        if (absTimeInDesc) {
+          var absPart = absTimeInDesc[1].trim();
+          var descAfterAbs = absTimeInDesc[2].trim();
+          if (descAfterAbs.length > 0) {
+            cpDescription = descAfterAbs;
+          }
+        }
+
         var costMatch = rawText.match(/\$[\d.]+/);
         return {
           entryType: 'checkpoint',
