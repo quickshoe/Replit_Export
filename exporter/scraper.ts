@@ -383,62 +383,59 @@ export class ReplitScraper {
     return result;
   }
 
-  private async waitForAgentIdle(page: Page): Promise<void> {
-    console.log('\nPre-check: Checking if Replit Agent is currently working...');
-
-    var isWorking = await page.evaluate(function() {
-      // Look for indicators that the agent is actively working:
-      // 1. Stop button (visible when agent is running)
-      var stopBtn = document.querySelector(
-        'button[aria-label*="Stop" i], button[aria-label*="Cancel" i], ' +
-        '[data-testid*="stop" i], [data-testid*="cancel-run" i], ' +
-        'button[class*="stop" i], button[class*="Stop"]'
-      );
-      if (stopBtn) {
-        var rect = (stopBtn as HTMLElement).getBoundingClientRect();
-        if (rect.width > 0 && rect.height > 0) return true;
+  private async checkAgentWorking(page: Page): Promise<boolean> {
+    return await page.evaluate(function() {
+      function isVisible(el: Element): boolean {
+        var rect = (el as HTMLElement).getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
       }
 
-      // 2. Spinner/loading animation
-      var spinner = document.querySelector(
-        '[class*="spinner" i], [class*="Spinner"], ' +
-        '[class*="loading" i][class*="agent" i], ' +
-        '[class*="LoadingDots"], [class*="loadingDots"], ' +
-        '[class*="thinking" i], [class*="Thinking"], ' +
-        '[role="progressbar"], [class*="progress" i][class*="agent" i]'
+      // Primary indicator: Stop/cancel button specific to agent runs.
+      // Only match buttons whose accessible label specifically says "Stop" or
+      // "Cancel" AND that live inside the agent chat panel area.
+      var agentPanel = document.querySelector(
+        '[class*="AgentChat"], [class*="agentChat"], [class*="agent-chat"], ' +
+        '[data-testid*="agent" i]'
       );
-      if (spinner) {
-        var spinRect = (spinner as HTMLElement).getBoundingClientRect();
-        if (spinRect.width > 0 && spinRect.height > 0) return true;
+      var searchRoot = agentPanel || document;
+      var buttons = searchRoot.querySelectorAll('button');
+      for (var b = 0; b < buttons.length; b++) {
+        var btn = buttons[b];
+        var ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+        var btnText = (btn.textContent || '').trim().toLowerCase();
+        // Must explicitly say "stop" as a standalone concept (not "stopwatch" etc.)
+        var isStopBtn = (ariaLabel === 'stop' || ariaLabel === 'stop agent' ||
+          ariaLabel === 'cancel' || ariaLabel === 'cancel run' ||
+          btnText === 'stop' || btnText === 'cancel');
+        if (isStopBtn && isVisible(btn)) return true;
       }
 
-      // 3. "Agent is working" or "Thinking" text indicators
-      var statusEls = document.querySelectorAll(
-        '[class*="status" i], [class*="Status"], ' +
-        '[class*="AgentState"], [class*="agentState"], ' +
-        '[class*="indicator" i]'
-      );
-      for (var i = 0; i < statusEls.length; i++) {
-        var text = (statusEls[i].textContent || '').trim().toLowerCase();
-        if (text.indexOf('working') >= 0 || text.indexOf('thinking') >= 0 ||
-            text.indexOf('running') >= 0 || text.indexOf('generating') >= 0) {
-          var statusRect = (statusEls[i] as HTMLElement).getBoundingClientRect();
-          if (statusRect.width > 0 && statusRect.height > 0) return true;
-        }
-      }
-
-      // 4. Active streaming response (partial message being written)
-      var streamingEl = document.querySelector(
-        '[class*="streaming" i], [class*="Streaming"], ' +
-        '[class*="cursor-blink" i], [class*="typing-indicator" i]'
-      );
-      if (streamingEl) {
-        var streamRect = (streamingEl as HTMLElement).getBoundingClientRect();
-        if (streamRect.width > 0 && streamRect.height > 0) return true;
+      // Secondary indicator: Agent-specific class names for active state.
+      // These are narrow Replit-internal module class patterns.
+      var agentActiveSelectors = [
+        '[class*="AgentState"][class*="working" i]',
+        '[class*="AgentState"][class*="thinking" i]',
+        '[class*="AgentState"][class*="running" i]',
+        '[class*="agentState"][class*="working" i]',
+        '[class*="agentState"][class*="thinking" i]',
+        '[class*="agentState"][class*="running" i]',
+        '[class*="EndOfRunSummary"][class*="streaming" i]',
+        '[class*="AgentChat"][class*="streaming" i]',
+        '[class*="agentChat"][class*="streaming" i]'
+      ];
+      for (var s = 0; s < agentActiveSelectors.length; s++) {
+        var match = document.querySelector(agentActiveSelectors[s]);
+        if (match && isVisible(match)) return true;
       }
 
       return false;
     });
+  }
+
+  private async waitForAgentIdle(page: Page): Promise<void> {
+    console.log('\nPre-check: Checking if Replit Agent is currently working...');
+
+    var isWorking = await this.checkAgentWorking(page);
 
     if (!isWorking) {
       console.log('  Replit Agent is idle. Proceeding with scraping.');
@@ -464,48 +461,7 @@ export class ReplitScraper {
     while (Date.now() - waitStart < maxWaitMs) {
       await page.waitForTimeout(pollIntervalMs);
 
-      var stillWorking = await page.evaluate(function() {
-        var stopBtn = document.querySelector(
-          'button[aria-label*="Stop" i], button[aria-label*="Cancel" i], ' +
-          '[data-testid*="stop" i], [data-testid*="cancel-run" i], ' +
-          'button[class*="stop" i], button[class*="Stop"]'
-        );
-        if (stopBtn) {
-          var rect = (stopBtn as HTMLElement).getBoundingClientRect();
-          if (rect.width > 0 && rect.height > 0) return true;
-        }
-        var spinner = document.querySelector(
-          '[class*="spinner" i], [class*="Spinner"], ' +
-          '[class*="LoadingDots"], [class*="loadingDots"], ' +
-          '[class*="thinking" i], [class*="Thinking"], ' +
-          '[role="progressbar"]'
-        );
-        if (spinner) {
-          var spinRect = (spinner as HTMLElement).getBoundingClientRect();
-          if (spinRect.width > 0 && spinRect.height > 0) return true;
-        }
-        var statusEls = document.querySelectorAll(
-          '[class*="status" i], [class*="Status"], ' +
-          '[class*="AgentState"], [class*="agentState"]'
-        );
-        for (var i = 0; i < statusEls.length; i++) {
-          var text = (statusEls[i].textContent || '').trim().toLowerCase();
-          if (text.indexOf('working') >= 0 || text.indexOf('thinking') >= 0 ||
-              text.indexOf('running') >= 0 || text.indexOf('generating') >= 0) {
-            var statusRect = (statusEls[i] as HTMLElement).getBoundingClientRect();
-            if (statusRect.width > 0 && statusRect.height > 0) return true;
-          }
-        }
-        var streamingEl = document.querySelector(
-          '[class*="streaming" i], [class*="Streaming"], ' +
-          '[class*="cursor-blink" i], [class*="typing-indicator" i]'
-        );
-        if (streamingEl) {
-          var streamRect = (streamingEl as HTMLElement).getBoundingClientRect();
-          if (streamRect.width > 0 && streamRect.height > 0) return true;
-        }
-        return false;
-      });
+      var stillWorking = await this.checkAgentWorking(page);
 
       if (!stillWorking) {
         var elapsedSec = Math.round((Date.now() - waitStart) / 1000);
