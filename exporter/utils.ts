@@ -63,6 +63,17 @@ export function parseTimestamp(timeStr: string | null): Date | null {
         return new Date(now.getTime() - value * 365 * 24 * 60 * 60 * 1000);
     }
   }
+
+  const realTimeMatch = cleaned.match(/(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})/i);
+  if (realTimeMatch) {
+    try {
+      const parsed = new Date(realTimeMatch[1]);
+      if (!isNaN(parsed.getTime())) {
+        return parsed;
+      }
+    } catch {
+    }
+  }
   
   if (/just now|moment ago/i.test(cleaned)) {
     return new Date();
@@ -126,6 +137,53 @@ export function saveJsonExport(data: ReplExport, outputDir: string): string {
   const safeName = data.replName.replace(/[^a-zA-Z0-9-_]/g, '_');
   const filePath = path.join(outputDir, `${safeName}.json`);
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
+  return filePath;
+}
+
+export function exportAllEventsCsv(exports: ReplExport[], outputDir: string): string {
+  const rows: Record<string, any>[] = [];
+  
+  for (const exp of exports) {
+    for (const msg of exp.messages) {
+      rows.push({
+        replName: exp.replName,
+        timestamp: msg.timestamp || '',
+        eventType: msg.type,
+        content: msg.content.substring(0, 10000),
+      });
+    }
+
+    for (const cp of exp.checkpoints) {
+      rows.push({
+        replName: exp.replName,
+        timestamp: cp.timestamp || '',
+        eventType: 'checkpoint',
+        content: cp.description || '',
+      });
+    }
+
+    for (const we of exp.workEntries) {
+      const parts: string[] = [];
+      if (we.timeWorked) parts.push('Worked for ' + we.timeWorked);
+      if (we.workDoneActions != null) parts.push(we.workDoneActions + ' actions');
+      if (we.itemsReadLines != null) parts.push(we.itemsReadLines + ' lines read');
+      if (we.codeChangedPlus != null || we.codeChangedMinus != null) {
+        parts.push('Code: +' + (we.codeChangedPlus || 0) + '/-' + (we.codeChangedMinus || 0));
+      }
+      if (we.agentUsage != null) parts.push('Agent usage: $' + we.agentUsage);
+      
+      rows.push({
+        replName: exp.replName,
+        timestamp: we.timestamp || '',
+        eventType: 'work-entry',
+        content: parts.join(', '),
+      });
+    }
+  }
+  
+  const headers = ['replName', 'timestamp', 'eventType', 'content'];
+  const filePath = path.join(outputDir, 'all-events.csv');
+  writeCsv(headers, rows, filePath);
   return filePath;
 }
 
@@ -197,23 +255,13 @@ export function exportAgentUsageDetailsCsv(exports: ReplExport[], outputDir: str
             timeWorked: we.timeWorked || '',
             lineItemLabel: detail.label,
             lineItemAmount: detail.amount ?? '',
-            totalAgentUsage: we.agentUsage ?? '',
           });
         }
-      } else if (we.agentUsage != null) {
-        rows.push({
-          replName: exp.replName,
-          timestamp: we.timestamp || '',
-          timeWorked: we.timeWorked || '',
-          lineItemLabel: 'Total',
-          lineItemAmount: we.agentUsage,
-          totalAgentUsage: we.agentUsage,
-        });
       }
     }
   }
   
-  const headers = ['replName', 'timestamp', 'timeWorked', 'lineItemLabel', 'lineItemAmount', 'totalAgentUsage'];
+  const headers = ['replName', 'timestamp', 'timeWorked', 'lineItemLabel', 'lineItemAmount'];
   const filePath = path.join(outputDir, 'agent-usage-details.csv');
   writeCsv(headers, rows, filePath);
   return filePath;

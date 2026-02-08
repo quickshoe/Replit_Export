@@ -214,20 +214,26 @@ export class ReplitScraper {
     console.log(`Navigating to: ${fullUrl}`);
     
     try {
-      await page.goto(fullUrl, { waitUntil: 'networkidle', timeout: 60000 });
+      await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      console.log('Page DOM loaded successfully.');
     } catch (err) {
-      console.log('Initial navigation timeout, checking if page loaded...');
+      console.log('Navigation timeout on domcontentloaded, continuing anyway...');
     }
     
-    await page.waitForTimeout(3000);
+    console.log('Waiting for page to settle...');
+    await page.waitForTimeout(5000);
 
     await this.handleLoginRedirect(page);
 
     const currentUrl = page.url();
     if (!currentUrl.includes(replUrl) && !this.isLoginPage(currentUrl)) {
       console.log('Navigating to repl after login...');
-      await page.goto(fullUrl, { waitUntil: 'networkidle', timeout: 60000 });
-      await page.waitForTimeout(3000);
+      try {
+        await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      } catch (err) {
+        console.log('Re-navigation timeout, continuing...');
+      }
+      await page.waitForTimeout(5000);
       
       await this.handleLoginRedirect(page);
     }
@@ -235,6 +241,7 @@ export class ReplitScraper {
     await page.waitForTimeout(2000);
 
     const chatContainer = await this.findChatContainer(page);
+    console.log(`Chat container found: ${chatContainer || 'none (will use fallback scrolling)'}`);
     
     console.log('Scrolling to load full chat history...');
     await this.scrollToLoadAll(page, chatContainer);
@@ -267,7 +274,16 @@ export class ReplitScraper {
       workEntries,
     };
 
-    console.log(`Found ${messages.length} messages, ${checkpoints.length} checkpoints, and ${workEntries.length} work entries`);
+    console.log(`\n  Results summary:`);
+    console.log(`    Messages: ${messages.length} (${messages.filter(m => m.type === 'user').length} user, ${messages.filter(m => m.type === 'agent').length} agent)`);
+    console.log(`    Checkpoints: ${checkpoints.length}`);
+    console.log(`    Work entries: ${workEntries.length}`);
+    const withTimestamp = [...messages, ...workEntries, ...checkpoints].filter((e: any) => e.timestamp).length;
+    const total = messages.length + workEntries.length + checkpoints.length;
+    console.log(`    Items with timestamps: ${withTimestamp}/${total}`);
+    const detailCount = workEntries.reduce((sum, we) => sum + (we.chargeDetails ? we.chargeDetails.length : 0), 0);
+    console.log(`    Agent usage line items: ${detailCount}`);
+
     return result;
   }
 
@@ -324,6 +340,8 @@ export class ReplitScraper {
 
     if (expandedCount > 0) {
       console.log(`\n  Expanded ${expandedCount} collapsed sections`);
+    } else {
+      console.log('  No general collapsed sections found');
     }
 
     await page.waitForTimeout(1000);
@@ -624,7 +642,15 @@ export class ReplitScraper {
 
   private async dumpDomStructure(page: Page, outputDir: string): Promise<void> {
     var domInfo = await page.evaluate(function() {
-      var info = { containers: [] as any[], sampleElements: [] as any[], bodyClasses: document.body.getAttribute('class') || '', url: window.location.href };
+      var info = {
+        containers: [] as any[],
+        sampleElements: [] as any[],
+        bodyClasses: document.body.getAttribute('class') || '',
+        url: window.location.href,
+        timeElements: [] as any[],
+        endOfRunSamples: [] as any[],
+        agentUsageSamples: [] as any[]
+      };
 
       var allEls = document.querySelectorAll('div, section, main, article');
       for (var i = 0; i < allEls.length; i++) {
@@ -691,12 +717,51 @@ export class ReplitScraper {
         }
       }
 
+      var timeEls = document.querySelectorAll('time, [datetime], [class*="timestamp"], [class*="Timestamp"], [class*="timeAgo"], [class*="TimeAgo"], [class*="relativeTime"]');
+      for (var ti = 0; ti < Math.min(10, timeEls.length); ti++) {
+        info.timeElements.push({
+          tag: timeEls[ti].tagName,
+          className: (timeEls[ti].getAttribute('class') || '').substring(0, 200),
+          datetime: timeEls[ti].getAttribute('datetime') || '',
+          title: timeEls[ti].getAttribute('title') || '',
+          textContent: (timeEls[ti].textContent || '').trim().substring(0, 100),
+          outerHTML: timeEls[ti].outerHTML.substring(0, 500),
+          parentClass: (timeEls[ti].parentElement ? (timeEls[ti].parentElement as Element).getAttribute('class') || '' : '').substring(0, 200)
+        });
+      }
+
+      var endOfRunEls = document.querySelectorAll('[class*="EndOfRunSummary"], [class*="endOfRun"]');
+      for (var eri = 0; eri < Math.min(3, endOfRunEls.length); eri++) {
+        var erEl = endOfRunEls[eri];
+        info.endOfRunSamples.push({
+          className: (erEl.getAttribute('class') || '').substring(0, 300),
+          textContent: (erEl.textContent || '').trim().substring(0, 500),
+          innerHTML: erEl.innerHTML.substring(0, 2000),
+          childCount: erEl.children.length
+        });
+      }
+
+      var agentUsageEls = document.querySelectorAll('[class*="EndOfRunSummary"] [aria-expanded], [class*="endOfRun"] [aria-expanded]');
+      for (var aui = 0; aui < Math.min(5, agentUsageEls.length); aui++) {
+        var auEl = agentUsageEls[aui];
+        var auParent = auEl.parentElement;
+        info.agentUsageSamples.push({
+          className: (auEl.getAttribute('class') || '').substring(0, 300),
+          ariaExpanded: auEl.getAttribute('aria-expanded'),
+          textContent: (auEl.textContent || '').trim().substring(0, 200),
+          outerHTML: auEl.outerHTML.substring(0, 500),
+          parentInnerHTML: auParent ? auParent.innerHTML.substring(0, 2000) : '',
+          nextSiblingHTML: auEl.nextElementSibling ? auEl.nextElementSibling.outerHTML.substring(0, 1000) : ''
+        });
+      }
+
       return info;
     });
 
     var debugPath = path.join(outputDir, 'dom-debug.json');
     fs.writeFileSync(debugPath, JSON.stringify(domInfo, null, 2), 'utf-8');
     console.log(`  DOM debug info saved to: ${debugPath}`);
+    console.log(`  Debug stats: ${domInfo.timeElements.length} time elements, ${domInfo.endOfRunSamples.length} EndOfRunSummary elements, ${domInfo.agentUsageSamples.length} expandable Agent Usage elements`);
   }
 
   private async extractChatData(page: Page, outputDir: string = './exports'): Promise<{ messages: ChatMessage[]; checkpoints: Checkpoint[]; workEntries: WorkEntry[] }> {
@@ -706,7 +771,182 @@ export class ReplitScraper {
       console.log('  Note: Could not dump DOM structure for debugging');
     }
 
-    var data = await page.evaluate(function() {
+    // Pre-compute timestamps for all event containers in a separate evaluate
+    // to avoid nested function definitions inside page.evaluate (ES5 safety)
+    var timestampMap = await page.evaluate(function() {
+      var results = {} as any;
+      var selectors = '[class*="eventContainer"], [class*="EventContainer"], [data-event-type]';
+      var containers = document.querySelectorAll(selectors);
+
+      for (var idx = 0; idx < containers.length; idx++) {
+        var el = containers[idx];
+
+        // 1. <time> element inside
+        var timeEl = el.querySelector('time');
+        if (timeEl) {
+          var dt = timeEl.getAttribute('datetime');
+          if (dt) { results[idx] = dt; continue; }
+          var tt = (timeEl.textContent || '').trim();
+          if (tt.length > 0 && tt.length < 100) { results[idx] = tt; continue; }
+        }
+
+        // 2. Own datetime/title attribute
+        var elDatetime = el.getAttribute('datetime');
+        if (elDatetime) { results[idx] = elDatetime; continue; }
+        var elTitle = el.getAttribute('title');
+        if (elTitle && elTitle.match(/\d{4}/)) { results[idx] = elTitle; continue; }
+
+        // 3. Parent <time> element
+        var parent = el.parentElement;
+        if (parent) {
+          var parentTime = parent.querySelector('time');
+          if (parentTime) {
+            var pdt = parentTime.getAttribute('datetime');
+            if (pdt) { results[idx] = pdt; continue; }
+            var ptt = (parentTime.textContent || '').trim();
+            if (ptt.length > 0 && ptt.length < 100) { results[idx] = ptt; continue; }
+          }
+        }
+
+        // 4. Siblings with timestamp
+        var foundSibling = false;
+        if (parent) {
+          var siblings = parent.children;
+          for (var si = 0; si < siblings.length; si++) {
+            var sib = siblings[si];
+            if (sib === el) continue;
+            var sibTime = sib.querySelector('time');
+            if (sibTime) {
+              var sdt = sibTime.getAttribute('datetime');
+              if (sdt) { results[idx] = sdt; foundSibling = true; break; }
+              var stt = (sibTime.textContent || '').trim();
+              if (stt.length > 0 && stt.length < 100) { results[idx] = stt; foundSibling = true; break; }
+            }
+            var sibClass = (sib.getAttribute('class') || '').toLowerCase();
+            if (sibClass.indexOf('timestamp') >= 0 || sibClass.indexOf('timeago') >= 0 || sibClass.indexOf('time') >= 0) {
+              var sibText = (sib.textContent || '').trim();
+              if (sibText.length > 0 && sibText.length < 100) { results[idx] = sibText; foundSibling = true; break; }
+            }
+          }
+        }
+        if (foundSibling) continue;
+
+        // 5. Timestamp CSS class descendants
+        var tsEls = el.querySelectorAll('[class*="timestamp"], [class*="Timestamp"], [class*="timeAgo"], [class*="TimeAgo"], [class*="relativeTime"]');
+        var foundTsClass = false;
+        for (var tsi = 0; tsi < tsEls.length; tsi++) {
+          var tsText = (tsEls[tsi].textContent || '').trim();
+          if (tsText.length > 0 && tsText.length < 100) { results[idx] = tsText; foundTsClass = true; break; }
+        }
+        if (foundTsClass) continue;
+
+        // 6. Real timestamp pattern: "3:49 pm, Feb 03, 2026"
+        var rawText = (el.textContent || '');
+        var realTsMatch = rawText.match(/(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})/i);
+        if (realTsMatch) { results[idx] = realTsMatch[1]; continue; }
+
+        // 7. Relative time: "4 days ago"
+        var relMatch = rawText.match(/(\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago)/i);
+        if (relMatch) { results[idx] = relMatch[1]; continue; }
+
+        // 8. ISO timestamp
+        var isoMatch = rawText.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/);
+        if (isoMatch) { results[idx] = isoMatch[1]; continue; }
+      }
+
+      return results;
+    });
+
+    // Also pre-compute timestamps for fallback selectors
+    var fallbackTimestampMap = await page.evaluate(function() {
+      var results = {} as any;
+      var broadSelectors = [
+        '[data-cy*="message"]',
+        '[data-event-type*="message"]',
+        '[class*="Message"][class*="module"]',
+        '[data-testid*="message"]',
+        '[data-testid*="chat"]',
+        '[role="listitem"]',
+        '[role="article"]'
+      ];
+      var selectorStr = broadSelectors.join(', ');
+      var els = document.querySelectorAll(selectorStr);
+
+      for (var idx = 0; idx < els.length; idx++) {
+        var el = els[idx];
+
+        var timeEl = el.querySelector('time');
+        if (timeEl) {
+          var dt = timeEl.getAttribute('datetime');
+          if (dt) { results[idx] = dt; continue; }
+          var tt = (timeEl.textContent || '').trim();
+          if (tt.length > 0 && tt.length < 100) { results[idx] = tt; continue; }
+        }
+
+        var elDatetime = el.getAttribute('datetime');
+        if (elDatetime) { results[idx] = elDatetime; continue; }
+        var elTitle = el.getAttribute('title');
+        if (elTitle && elTitle.match(/\d{4}/)) { results[idx] = elTitle; continue; }
+
+        var parent = el.parentElement;
+        if (parent) {
+          var parentTime = parent.querySelector('time');
+          if (parentTime) {
+            var pdt = parentTime.getAttribute('datetime');
+            if (pdt) { results[idx] = pdt; continue; }
+            var ptt = (parentTime.textContent || '').trim();
+            if (ptt.length > 0 && ptt.length < 100) { results[idx] = ptt; continue; }
+          }
+        }
+
+        var foundSibling = false;
+        if (parent) {
+          var siblings = parent.children;
+          for (var si = 0; si < siblings.length; si++) {
+            var sib = siblings[si];
+            if (sib === el) continue;
+            var sibTime = sib.querySelector('time');
+            if (sibTime) {
+              var sdt = sibTime.getAttribute('datetime');
+              if (sdt) { results[idx] = sdt; foundSibling = true; break; }
+              var stt = (sibTime.textContent || '').trim();
+              if (stt.length > 0 && stt.length < 100) { results[idx] = stt; foundSibling = true; break; }
+            }
+            var sibClass = (sib.getAttribute('class') || '').toLowerCase();
+            if (sibClass.indexOf('timestamp') >= 0 || sibClass.indexOf('timeago') >= 0 || sibClass.indexOf('time') >= 0) {
+              var sibText = (sib.textContent || '').trim();
+              if (sibText.length > 0 && sibText.length < 100) { results[idx] = sibText; foundSibling = true; break; }
+            }
+          }
+        }
+        if (foundSibling) continue;
+
+        var tsEls = el.querySelectorAll('[class*="timestamp"], [class*="Timestamp"], [class*="timeAgo"], [class*="TimeAgo"], [class*="relativeTime"]');
+        var foundTsClass = false;
+        for (var tsi = 0; tsi < tsEls.length; tsi++) {
+          var tsText = (tsEls[tsi].textContent || '').trim();
+          if (tsText.length > 0 && tsText.length < 100) { results[idx] = tsText; foundTsClass = true; break; }
+        }
+        if (foundTsClass) continue;
+
+        var rawText = (el.textContent || '');
+        var realTsMatch = rawText.match(/(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})/i);
+        if (realTsMatch) { results[idx] = realTsMatch[1]; continue; }
+
+        var relMatch = rawText.match(/(\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago)/i);
+        if (relMatch) { results[idx] = relMatch[1]; continue; }
+
+        var isoMatch = rawText.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/);
+        if (isoMatch) { results[idx] = isoMatch[1]; continue; }
+      }
+
+      return results;
+    });
+
+    var combinedMaps = { ts: timestampMap, fb: fallbackTimestampMap };
+    var data = await page.evaluate(function(maps) {
+      var tsMap = maps.ts;
+      var fbTsMap = maps.fb;
       var messages = [] as any[];
       var checkpoints = [] as any[];
       var workEntries = [] as any[];
@@ -728,10 +968,8 @@ export class ReplitScraper {
         if (seenKeys[dedupKey]) continue;
         seenKeys[dedupKey] = true;
 
-        var relTimeMatch = rawText.match(/(\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago)/i);
-        var relTimestamp = relTimeMatch ? relTimeMatch[1] : null;
-        var isoMatch = rawText.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/);
-        var timestamp = isoMatch ? isoMatch[1] : relTimestamp;
+        // Look up pre-computed timestamp
+        var timestamp = tsMap[ei] || null;
 
         var evClass = (evEl.getAttribute('class') || '').toLowerCase();
         var evEventType = (evEl.getAttribute('data-event-type') || '').toLowerCase();
@@ -772,7 +1010,6 @@ export class ReplitScraper {
             }
           }
 
-          // Parse structured fields from the expanded content
           var actionsMatch = rawText.match(/(\d+)\s*actions?/i);
           var workDoneActions = actionsMatch ? parseInt(actionsMatch[1], 10) : null;
 
@@ -784,7 +1021,6 @@ export class ReplitScraper {
           var codeChangedPlus = codePlusMatch ? parseInt(codePlusMatch[1], 10) : null;
           var codeChangedMinus = codeMinusMatch ? parseInt(codeMinusMatch[1], 10) : null;
 
-          // Extract agent usage total (first dollar amount, or from "Agent Usage" line)
           var totalCharge = null as any;
           var costMatches = rawText.match(/\$[\d.]+/g);
           if (costMatches && costMatches.length > 0) {
@@ -796,68 +1032,109 @@ export class ReplitScraper {
           var chargeDetails = [] as any[];
           var searchRoot = endOfRunRoot || evEl;
 
-          // Look for expanded Agent Usage sub-section
-          // After expanding Agent Usage chevron, individual items appear as label + $amount pairs
-          var allTextNodes = searchRoot.querySelectorAll('span, div, p, li');
-          var prevLabel = '';
-          var insideAgentUsage = false;
-          for (var tn = 0; tn < allTextNodes.length; tn++) {
-            var nodeText = (allTextNodes[tn].textContent || '').trim();
+          // Strategy 1: Scan all child elements for $ amounts paired with labels
+          // The DOM typically renders label text in one element and $X.XX in another
+          var allChildEls = searchRoot.querySelectorAll('*');
+          var labelCandidates = [] as any[];
+          var amountCandidates = [] as any[];
 
-            // Detect when we enter Agent Usage section
-            if (nodeText === 'Agent Usage' || (nodeText.indexOf('Agent Usage') >= 0 && nodeText.length < 30)) {
-              insideAgentUsage = true;
-              prevLabel = '';
+          for (var ci = 0; ci < allChildEls.length; ci++) {
+            var childEl = allChildEls[ci];
+            // Only consider leaf-ish elements (no or few children for precision)
+            if (childEl.children.length > 3) continue;
+            var childText = (childEl.textContent || '').trim();
+            if (childText.length === 0) continue;
+
+            // Check if this is a dollar amount
+            var amtMatch = childText.match(/^\$([\d.]+)$/);
+            if (amtMatch) {
+              amountCandidates.push({
+                el: childEl,
+                amount: parseFloat(amtMatch[1]),
+                text: childText,
+                rect: childEl.getBoundingClientRect()
+              });
               continue;
             }
 
-            if (insideAgentUsage) {
-              var chargeMatch = nodeText.match(/^\$([\d.]+)$/);
-              if (chargeMatch && prevLabel) {
-                var labelClean = prevLabel.replace(/\s+/g, ' ').trim();
-                // Skip labels that are just the total or agent usage header
-                if (labelClean.toLowerCase() !== 'agent usage' && labelClean.toLowerCase() !== 'total') {
-                  var chargeVal = parseFloat(chargeMatch[1]);
-                  if (!isNaN(chargeVal)) {
-                    chargeDetails.push({
-                      label: labelClean,
-                      amount: chargeVal
-                    });
-                  }
+            // Check if this could be a label (short text, no dollar sign)
+            if (childText.length > 2 && childText.length < 150 && childText.indexOf('$') < 0) {
+              // Skip structural/noise labels
+              var lowerText = childText.toLowerCase();
+              if (lowerText === 'agent usage' ||
+                  lowerText.indexOf('worked for') >= 0 ||
+                  lowerText.indexOf('time worked') >= 0 ||
+                  lowerText.indexOf('work done') >= 0 ||
+                  lowerText.indexOf('items read') >= 0 ||
+                  lowerText.indexOf('code changed') >= 0 ||
+                  lowerText.indexOf('checkpoint') >= 0 ||
+                  lowerText.indexOf('rollback') >= 0 ||
+                  lowerText.indexOf('preview') >= 0 ||
+                  lowerText.indexOf('changes') >= 0) continue;
+
+              labelCandidates.push({
+                el: childEl,
+                text: childText,
+                rect: childEl.getBoundingClientRect()
+              });
+            }
+          }
+
+          // Strategy 2: Match labels to amounts by DOM proximity
+          // For each $amount, find the nearest preceding label
+          var usedLabels = {} as any;
+          for (var ami = 0; ami < amountCandidates.length; ami++) {
+            var amt = amountCandidates[ami];
+            // Skip if this is likely the total (first or only dollar amount)
+            // We want the detail items, not the summary total
+
+            var bestLabel = null as any;
+            var bestDistance = 999999;
+
+            // Walk backwards in DOM order to find the nearest label
+            for (var li = 0; li < labelCandidates.length; li++) {
+              var lbl = labelCandidates[li];
+              if (usedLabels[li]) continue;
+
+              // Check if this label appears before this amount in DOM order
+              var pos = lbl.el.compareDocumentPosition(amt.el);
+              // pos & 4 means amt.el follows lbl.el
+              if (pos & 4) {
+                // Calculate vertical distance
+                var vDist = Math.abs(amt.rect.top - lbl.rect.top);
+                if (vDist < bestDistance && vDist < 100) {
+                  bestDistance = vDist;
+                  bestLabel = { index: li, text: lbl.text };
                 }
               }
-              if (nodeText.length > 0 && nodeText.length < 200 && !nodeText.match(/^\$[\d.]+$/)) {
-                prevLabel = nodeText;
+            }
+
+            if (bestLabel) {
+              usedLabels[bestLabel.index] = true;
+              var cleanLabel = bestLabel.text.replace(/\s+/g, ' ').trim();
+              if (!isNaN(amt.amount) && amt.amount > 0) {
+                chargeDetails.push({
+                  label: cleanLabel,
+                  amount: amt.amount
+                });
               }
             }
           }
 
-          // Fallback: if no Agent Usage section found, try generic label+amount scanning
-          if (chargeDetails.length === 0) {
-            prevLabel = '';
-            for (var tn2 = 0; tn2 < allTextNodes.length; tn2++) {
-              var nodeText2 = (allTextNodes[tn2].textContent || '').trim();
-              var chargeMatch2 = nodeText2.match(/^\$([\d.]+)$/);
-              if (chargeMatch2 && prevLabel) {
-                var labelClean2 = prevLabel.replace(/\s+/g, ' ').trim();
-                if (labelClean2.toLowerCase() !== 'agent usage' &&
-                    labelClean2.indexOf('Worked for') < 0 &&
-                    labelClean2.indexOf('Time worked') < 0 &&
-                    labelClean2.indexOf('Work done') < 0 &&
-                    labelClean2.indexOf('Items read') < 0 &&
-                    labelClean2.indexOf('Code changed') < 0) {
-                  var chargeVal2 = parseFloat(chargeMatch2[1]);
-                  if (!isNaN(chargeVal2)) {
-                    chargeDetails.push({
-                      label: labelClean2,
-                      amount: chargeVal2
-                    });
-                  }
-                }
+          // If we got charge details, remove the total (usually the first or last item that matches the totalCharge)
+          if (chargeDetails.length > 1 && totalCharge !== null) {
+            // Remove any entry whose amount matches the total (it's a summary, not a line item)
+            var filtered = [] as any[];
+            var removedTotal = false;
+            for (var fi = 0; fi < chargeDetails.length; fi++) {
+              if (!removedTotal && Math.abs(chargeDetails[fi].amount - totalCharge) < 0.005) {
+                removedTotal = true;
+                continue;
               }
-              if (nodeText2.length > 0 && nodeText2.length < 200 && !nodeText2.match(/^\$[\d.]+$/)) {
-                prevLabel = nodeText2;
-              }
+              filtered.push(chargeDetails[fi]);
+            }
+            if (filtered.length > 0) {
+              chargeDetails = filtered;
             }
           }
 
@@ -884,21 +1161,23 @@ export class ReplitScraper {
           (cleanedText.indexOf('Checkpoint') >= 0 && cleanedText.length < 500);
 
         if (isCheckpoint) {
-          // Extract real timestamp from expanded checkpoint content
-          // Pattern: "3:49 pm, Feb 03, 2026" or "7:03 am, Feb 04, 2026"
-          var realTimestampMatch = rawText.match(/(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})/i);
-          var cpTimestamp = realTimestampMatch ? realTimestampMatch[1] : timestamp;
+          // Use the comprehensive timestamp finder first
+          var cpTimestamp = timestamp;
 
-          // Extract the description - get the line after "Checkpoint made X ago"
+          // Also try to find real timestamp in expanded content
+          var realTimestampMatch = rawText.match(/(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})/i);
+          if (realTimestampMatch) {
+            cpTimestamp = realTimestampMatch[1];
+          }
+
           var cpDescription = '';
           var cpDescMatch = rawText.match(/Checkpoint\s+made[\s\S]*?ago\s*([\s\S]*?)(?:\d{1,2}:\d{2}\s*(?:am|pm)|\s*Rollback|\s*Preview|\s*Changes|$)/i);
           if (cpDescMatch && cpDescMatch[1]) {
             cpDescription = cpDescMatch[1].trim();
           }
           if (!cpDescription) {
-            // Try to get just the meaningful part: between "ago" and timestamp/Rollback
             cpDescription = cleanedText
-              .replace(/Checkpoint\s+made\s*.*?ago\s*/i, '')
+              .replace(/Checkpoint\s+made[\s\S]*?ago\s*/i, '')
               .replace(/\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4}/i, '')
               .replace(/Rollback\s+here/i, '')
               .replace(/Preview/i, '')
@@ -918,7 +1197,6 @@ export class ReplitScraper {
         }
 
         // ===== MESSAGE CLASSIFICATION =====
-        // Skip noise messages
         if (cleanedText.match(/^Worked\s+for\s+/i)) continue;
         if (cleanedText.match(/^Decided\s+on\s+/i) && cleanedText.length < 100) continue;
         if (cleanedText.match(/^\d+\s+actions?\s*$/i)) continue;
@@ -968,10 +1246,7 @@ export class ReplitScraper {
           if (seenKeys[bKey]) continue;
           seenKeys[bKey] = true;
 
-          var bRelTime = bRaw.match(/(\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago)/i);
-          var bTimestamp = bRelTime ? bRelTime[1] : null;
-          var bIso = bRaw.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/);
-          if (bIso) bTimestamp = bIso[1];
+          var bTimestamp = fbTsMap[bi] || null;
 
           var bClass = (bEl.getAttribute('class') || '').toLowerCase();
           var bCy = (bEl.getAttribute('data-cy') || '').toLowerCase();
@@ -1023,7 +1298,7 @@ export class ReplitScraper {
       }
 
       return { messages: deduped, checkpoints: checkpoints, workEntries: workEntries };
-    });
+    }, combinedMaps);
 
     return data as { messages: ChatMessage[]; checkpoints: Checkpoint[]; workEntries: WorkEntry[] };
   }

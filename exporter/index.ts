@@ -4,7 +4,7 @@ import { Command } from 'commander';
 import * as readline from 'readline';
 import * as fs from 'fs';
 import { ReplitScraper } from './scraper';
-import { saveJsonExport, exportChatCsv, exportWorkTrackingCsv, exportAgentUsageDetailsCsv, ensureDir } from './utils';
+import { saveJsonExport, exportAllEventsCsv, exportChatCsv, exportWorkTrackingCsv, exportAgentUsageDetailsCsv, ensureDir } from './utils';
 import type { ReplExport } from './types';
 
 const OUTPUT_DIR = './exports';
@@ -131,8 +131,11 @@ async function main() {
     }
 
     if (exports.length > 0) {
+      const allEventsPath = exportAllEventsCsv(exports, outputDir);
+      console.log(`\nAll events CSV saved: ${allEventsPath}`);
+
       const chatPath = exportChatCsv(exports, outputDir);
-      console.log(`\nChat CSV saved: ${chatPath}`);
+      console.log(`Chat CSV saved: ${chatPath}`);
       
       const workTrackingPath = exportWorkTrackingCsv(exports, outputDir);
       console.log(`Work tracking CSV saved: ${workTrackingPath}`);
@@ -149,9 +152,10 @@ async function main() {
 ║  Output:    ${outputDir.padEnd(45)}║
 ║                                                              ║
 ║  Files created:                                              ║
-║    {replName}.json  - Full export per repl                   ║
-║    chat.csv         - Clean chat messages only               ║
-║    work-tracking.csv - Time, actions, cost breakdown         ║
+║    {replName}.json         - Full export per repl            ║
+║    all-events.csv          - All events (messages+more)      ║
+║    chat.csv                - Clean chat messages only        ║
+║    work-tracking.csv       - Time, actions, cost breakdown   ║
 ║    agent-usage-details.csv - Charge line items               ║
 ╚══════════════════════════════════════════════════════════════╝
 `);
