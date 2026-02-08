@@ -124,10 +124,10 @@ function escapeCsvValue(val: any): string {
   return strVal;
 }
 
-function writeCsv(headers: string[], rows: Record<string, any>[], filePath: string): void {
-  const csvLines = [headers.join(',')];
+function writeCsv(columns: { key: string; label: string }[], rows: Record<string, any>[], filePath: string): void {
+  const csvLines = [columns.map(c => escapeCsvValue(c.label)).join(',')];
   for (const row of rows) {
-    const values = headers.map(h => escapeCsvValue(row[h]));
+    const values = columns.map(c => escapeCsvValue(row[c.key]));
     csvLines.push(values.join(','));
   }
   fs.writeFileSync(filePath, csvLines.join('\n'), 'utf-8');
@@ -181,9 +181,14 @@ export function exportAllEventsCsv(exports: ReplExport[], outputDir: string): st
     }
   }
   
-  const headers = ['replName', 'timestamp', 'eventType', 'content'];
+  const columns = [
+    { key: 'replName', label: 'Repl name' },
+    { key: 'timestamp', label: 'Timestamp' },
+    { key: 'eventType', label: 'Event type' },
+    { key: 'content', label: 'Content' },
+  ];
   const filePath = path.join(outputDir, 'all-events.csv');
-  writeCsv(headers, rows, filePath);
+  writeCsv(columns, rows, filePath);
   return filePath;
 }
 
@@ -209,9 +214,14 @@ export function exportChatCsv(exports: ReplExport[], outputDir: string): string 
     }
   }
   
-  const headers = ['replName', 'timestamp', 'messageType', 'content'];
+  const columns = [
+    { key: 'replName', label: 'Repl name' },
+    { key: 'timestamp', label: 'Timestamp' },
+    { key: 'messageType', label: 'Message type' },
+    { key: 'content', label: 'Content' },
+  ];
   const filePath = path.join(outputDir, 'chat.csv');
-  writeCsv(headers, rows, filePath);
+  writeCsv(columns, rows, filePath);
   return filePath;
 }
 
@@ -235,9 +245,18 @@ export function exportWorkTrackingCsv(exports: ReplExport[], outputDir: string):
     }
   }
   
-  const headers = ['replName', 'timestamp', 'timeWorked', 'workDoneActions', 'itemsReadLines', 'codeChangedPlus', 'codeChangedMinus', 'agentUsage'];
+  const columns = [
+    { key: 'replName', label: 'Repl name' },
+    { key: 'timestamp', label: 'Timestamp' },
+    { key: 'timeWorked', label: 'Time worked' },
+    { key: 'workDoneActions', label: 'Work done (actions)' },
+    { key: 'itemsReadLines', label: 'Items read (lines)' },
+    { key: 'codeChangedPlus', label: 'Code added' },
+    { key: 'codeChangedMinus', label: 'Code removed' },
+    { key: 'agentUsage', label: 'Agent usage fee' },
+  ];
   const filePath = path.join(outputDir, 'work-tracking.csv');
-  writeCsv(headers, rows, filePath);
+  writeCsv(columns, rows, filePath);
   return filePath;
 }
 
@@ -261,9 +280,15 @@ export function exportAgentUsageDetailsCsv(exports: ReplExport[], outputDir: str
     }
   }
   
-  const headers = ['replName', 'timestamp', 'timeWorked', 'lineItemLabel', 'lineItemAmount'];
+  const columns = [
+    { key: 'replName', label: 'Repl name' },
+    { key: 'timestamp', label: 'Timestamp' },
+    { key: 'timeWorked', label: 'Time worked' },
+    { key: 'lineItemLabel', label: 'Line item' },
+    { key: 'lineItemAmount', label: 'Amount' },
+  ];
   const filePath = path.join(outputDir, 'agent-usage-details.csv');
-  writeCsv(headers, rows, filePath);
+  writeCsv(columns, rows, filePath);
   return filePath;
 }
 

@@ -78,6 +78,13 @@ npx tsx exporter/index.ts --clear-session
 
 ## Recent Changes
 
+- 2026-02-08: CSV header and terminal box rendering improvements:
+  - All CSV headers now use readable labels: "Repl name", "Timestamp", "Event type", "Message type", "Content", etc.
+  - work-tracking.csv headers match Replit chat text: "Time worked", "Work done (actions)", "Items read (lines)", "Code added", "Code removed", "Agent usage fee"
+  - agent-usage-details.csv headers: "Repl name", "Timestamp", "Time worked", "Line item", "Amount"
+  - writeCsv now uses {key, label} column definitions to separate data keys from display headers
+  - Terminal box rendering uses padEnd for consistent line widths
+  - Export-complete box uses programmatic padding to guarantee alignment
 - 2026-02-08: Expand-collapse and timestamp association fixes:
   - Fixed expand-then-collapse bug: all expand passes now mark clicked elements with data-exporter-clicked="1" attribute
   - Subsequent passes skip elements already marked, preventing accidental toggling (expand then collapse)

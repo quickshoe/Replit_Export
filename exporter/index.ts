@@ -67,16 +67,16 @@ async function main() {
   }
 
   console.log(`
-╔══════════════════════════════════════════════════════════════╗
-║         Replit Agent Exporter v1.0.0                        ║
-║                                                              ║
-║  This tool exports chat history and checkpoints from        ║
-║  Replit Agent sessions to JSON and CSV files.               ║
-║                                                              ║
-║  Security: Your password is never stored. Only browser      ║
-║  session cookies are saved locally for convenience.         ║
-║  Delete ./playwright-session.json to clear the session.     ║
-╚══════════════════════════════════════════════════════════════╝
+╔════════════════════════════════════════════════════════════════╗
+║  Replit Agent Exporter v1.0.0                                 ║
+║                                                               ║
+║  This tool exports chat history and checkpoints from          ║
+║  Replit Agent sessions to JSON and CSV files.                 ║
+║                                                               ║
+║  Security: Your password is never stored. Only browser        ║
+║  session cookies are saved locally for convenience.           ║
+║  Delete ./playwright-session.json to clear the session.       ║
+╚════════════════════════════════════════════════════════════════╝
 `);
 
   const outputDir = options.output;
@@ -144,20 +144,23 @@ async function main() {
       console.log(`Agent usage details CSV saved: ${agentUsagePath}`);
     }
 
+    const w = 63;
+    const pad = (s: string) => '║' + s.padEnd(w) + '║';
+    const border = '═'.repeat(w);
     console.log(`
-╔══════════════════════════════════════════════════════════════╗
-║                      Export Complete!                        ║
-╠══════════════════════════════════════════════════════════════╣
-║${('  Processed: ' + String(exports.length).padEnd(3) + ' repl(s)').padEnd(60)}  ║
-║${('  Output:    ' + outputDir).padEnd(60)}  ║
-║                                                              ║
-║  Files created:                                              ║
-║    {replName}.json         - Full export per repl            ║
-║    all-events.csv          - All events (messages+more)      ║
-║    chat.csv                - Clean chat messages only        ║
-║    work-tracking.csv       - Time, actions, cost breakdown   ║
-║    agent-usage-details.csv - Charge line items               ║
-╚══════════════════════════════════════════════════════════════╝
+╔${border}╗
+${pad('                      Export Complete!                      ')}
+╠${border}╣
+${pad('  Processed: ' + String(exports.length).padEnd(3) + ' repl(s)')}
+${pad('  Output:    ' + outputDir)}
+${pad('')}
+${pad('  Files created:')}
+${pad('    {replName}.json         - Full export per repl')}
+${pad('    all-events.csv          - All events (messages+more)')}
+${pad('    chat.csv                - Clean chat messages only')}
+${pad('    work-tracking.csv       - Time, actions, cost breakdown')}
+${pad('    agent-usage-details.csv - Charge line items')}
+╚${border}╝
 `);
 
   } catch (err) {
