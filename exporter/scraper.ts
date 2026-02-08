@@ -6,6 +6,20 @@ import { calculateDuration, extractReplName } from './utils';
 
 const SESSION_FILE = './playwright-session.json';
 
+const LOAD_MORE_SELECTORS = [
+  'button:has-text("Show previous")',
+  'button:has-text("Load more")',
+  'button:has-text("Show earlier")',
+  'button:has-text("Previous messages")',
+  '[data-testid*="load-more"]',
+  '[data-testid*="previous"]',
+  '[data-cy*="load-more"]',
+  '[class*="LoadMore"]',
+  '[class*="load-more"]',
+  '[class*="showPrevious"]',
+  '[class*="ShowPrevious"]',
+];
+
 export class ReplitScraper {
   private browser: Browser | null = null;
   private context: BrowserContext | null = null;
@@ -803,6 +817,25 @@ export class ReplitScraper {
     return null;
   }
 
+  private async countMessageElements(page: Page): Promise<number> {
+    return page.evaluate(function() {
+      var selectors = [
+        '[data-testid*="message"]',
+        '[data-cy*="message"]',
+        '[class*="ChatMessage"]',
+        '[class*="chat-message"]',
+        '[class*="UserMessage"]',
+        '[class*="AgentMessage"]',
+        '[class*="AssistantMessage"]'
+      ];
+      var count = 0;
+      for (var k = 0; k < selectors.length; k++) {
+        count += document.querySelectorAll(selectors[k]).length;
+      }
+      return count;
+    });
+  }
+
   private async scrollToLoadAll(page: Page, containerSelector: string | null): Promise<void> {
     let previousCount = 0;
     let sameCountIterations = 0;
@@ -817,22 +850,7 @@ export class ReplitScraper {
         console.log(`\nReached time limit for loading history (60s)`);
         break;
       }
-      const currentCount = await page.evaluate(function() {
-        var selectors = [
-          '[data-testid*="message"]',
-          '[data-cy*="message"]',
-          '[class*="ChatMessage"]',
-          '[class*="chat-message"]',
-          '[class*="UserMessage"]',
-          '[class*="AgentMessage"]',
-          '[class*="AssistantMessage"]'
-        ];
-        var count = 0;
-        for (var k = 0; k < selectors.length; k++) {
-          count += document.querySelectorAll(selectors[k]).length;
-        }
-        return count;
-      });
+      const currentCount = await this.countMessageElements(page);
 
       await page.evaluate(function(selector) {
         if (selector) {
@@ -859,22 +877,7 @@ export class ReplitScraper {
         
         while (loadWaitAttempts < maxLoadWaitAttempts) {
           await page.waitForTimeout(500);
-          newCount = await page.evaluate(function() {
-            var selectors = [
-              '[data-testid*="message"]',
-              '[data-cy*="message"]',
-              '[class*="ChatMessage"]',
-              '[class*="chat-message"]',
-              '[class*="UserMessage"]',
-              '[class*="AgentMessage"]',
-              '[class*="AssistantMessage"]'
-            ];
-            var count = 0;
-            for (var k = 0; k < selectors.length; k++) {
-              count += document.querySelectorAll(selectors[k]).length;
-            }
-            return count;
-          });
+          newCount = await this.countMessageElements(page);
           
           if (newCount > currentCount) {
             process.stdout.write(`\rLoaded ${newCount - currentCount} new messages...`);
@@ -892,22 +895,7 @@ export class ReplitScraper {
           }
           const extendedWait = loadMoreFailedClicks === 0 ? 2000 : 4000;
           await page.waitForTimeout(extendedWait);
-          newCount = await page.evaluate(function() {
-            var selectors = [
-              '[data-testid*="message"]',
-              '[data-cy*="message"]',
-              '[class*="ChatMessage"]',
-              '[class*="chat-message"]',
-              '[class*="UserMessage"]',
-              '[class*="AgentMessage"]',
-              '[class*="AssistantMessage"]'
-            ];
-            var count = 0;
-            for (var k = 0; k < selectors.length; k++) {
-              count += document.querySelectorAll(selectors[k]).length;
-            }
-            return count;
-          });
+          newCount = await this.countMessageElements(page);
           if (newCount > currentCount) {
             process.stdout.write(`\rLoaded ${newCount - currentCount} new messages after extended wait...`);
             loadMoreFailedClicks = 0;
@@ -965,21 +953,7 @@ export class ReplitScraper {
   }
 
   private async clickLoadMoreButton(page: Page): Promise<boolean> {
-    const loadMoreSelectors = [
-      'button:has-text("Show previous")',
-      'button:has-text("Load more")',
-      'button:has-text("Show earlier")',
-      'button:has-text("Previous messages")',
-      '[data-testid*="load-more"]',
-      '[data-testid*="previous"]',
-      '[data-cy*="load-more"]',
-      '[class*="LoadMore"]',
-      '[class*="load-more"]',
-      '[class*="showPrevious"]',
-      '[class*="ShowPrevious"]',
-    ];
-
-    for (const selector of loadMoreSelectors) {
+    for (const selector of LOAD_MORE_SELECTORS) {
       try {
         const button = await page.$(selector);
         if (button) {
@@ -1017,21 +991,7 @@ export class ReplitScraper {
   }
 
   private async isLoadMoreButtonVisible(page: Page): Promise<boolean> {
-    const playwrightSelectors = [
-      'button:has-text("Show previous")',
-      'button:has-text("Load more")',
-      'button:has-text("Show earlier")',
-      'button:has-text("Previous messages")',
-      '[data-testid*="load-more"]',
-      '[data-testid*="previous"]',
-      '[data-cy*="load-more"]',
-      '[class*="LoadMore"]',
-      '[class*="load-more"]',
-      '[class*="showPrevious"]',
-      '[class*="ShowPrevious"]',
-    ];
-
-    for (const selector of playwrightSelectors) {
+    for (const selector of LOAD_MORE_SELECTORS) {
       try {
         const button = await page.$(selector);
         if (button) {
@@ -1113,67 +1073,6 @@ export class ReplitScraper {
 
       var data = await this.extractElementData(page, i, lastTimestamp);
       if (!data) continue;
-
-      if (data.timestamp && /^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i.test(data.timestamp)) {
-        var didClickToggle = await page.evaluate(function(idx) {
-          var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
-          if (idx >= containers.length) return false;
-          var el = containers[idx];
-
-          var toggles = el.querySelectorAll('[class*="Timestamp-module"], [class*="timestamp-module"], [class*="TimestampToggle"], [class*="timestampToggle"]');
-          for (var ti = 0; ti < toggles.length; ti++) {
-            var tog = toggles[ti];
-            var togText = (tog.textContent || '').trim();
-            if (/^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i.test(togText)) {
-              var togRect = tog.getBoundingClientRect();
-              if (togRect.width > 0 && togRect.height > 0) {
-                if (tog['click']) tog['click']();
-                return true;
-              }
-            }
-          }
-          return false;
-        }, i);
-
-        if (didClickToggle) {
-          await page.waitForTimeout(300);
-
-          var rereadTs = await page.evaluate(function(idx) {
-            var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
-            if (idx >= containers.length) return null;
-            var el = containers[idx];
-
-            var relativePattern = /^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i;
-
-            var tsModuleEls = el.querySelectorAll('[class*="Timestamp-module"], [class*="timestamp-module"]');
-            for (var tmi = 0; tmi < tsModuleEls.length; tmi++) {
-              var tmText = (tsModuleEls[tmi].textContent || '').trim();
-              if (tmText.length > 0 && tmText.length < 100 && !relativePattern.test(tmText)) {
-                return tmText;
-              }
-            }
-
-            var timeEl = el.querySelector('time');
-            if (timeEl) {
-              var dt = timeEl.getAttribute('datetime');
-              if (dt) return dt;
-              var tt = (timeEl.textContent || '').trim();
-              if (tt.length > 0 && tt.length < 100 && !relativePattern.test(tt)) return tt;
-            }
-
-            var rawText = (el.textContent || '').trim();
-            var realTsMatch = rawText.match(/(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})/i);
-            if (realTsMatch) return realTsMatch[1];
-
-            return null;
-          }, i);
-
-          if (rereadTs) {
-            data.timestamp = rereadTs;
-            console.log('  [Timestamp fix] Converted relative timestamp to: ' + rereadTs);
-          }
-        }
-      }
 
       if (data.timestamp) lastTimestamp = data.timestamp;
 
