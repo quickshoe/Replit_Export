@@ -640,6 +640,143 @@ export class ReplitScraper {
     return totalClicked;
   }
 
+  private async resolveRelativeTimestamps(page: Page): Promise<number> {
+    var relativeInfos: { containerIdx: number; elIndex: number; text: string }[] = await page.evaluate(function() {
+      var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
+      var results = [] as any[];
+      for (var i = 0; i < containers.length; i++) {
+        var el = containers[i];
+        var rawText = (el.textContent || '').trim();
+
+        var isCheckpoint = (el.getAttribute('class') || '').toLowerCase().indexOf('checkpoint') >= 0 ||
+          (el.getAttribute('data-event-type') || '').toLowerCase().indexOf('checkpoint') >= 0 ||
+          el.querySelector('[class*="checkpoint" i], [data-event-type*="checkpoint"]') !== null ||
+          (rawText.indexOf('Checkpoint') >= 0 && rawText.length < 500);
+
+        if (isCheckpoint) continue;
+
+        var isWork = (el.getAttribute('class') || '').toLowerCase().indexOf('endofrunsummary') >= 0 ||
+          el.querySelector('[class*="EndOfRunSummary"]') !== null ||
+          /Worked\s+for\s+/i.test(rawText);
+        if (isWork) continue;
+
+        var tsModuleEls = el.querySelectorAll('[class*="Timestamp-module"], [class*="timestamp-module"]');
+        for (var tmi = 0; tmi < tsModuleEls.length; tmi++) {
+          var tmEl = tsModuleEls[tmi];
+          var tmText = (tmEl.textContent || '').trim();
+          if (/^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i.test(tmText)) {
+            var allEls = el.querySelectorAll('*');
+            var elIdx = -1;
+            for (var ai = 0; ai < allEls.length; ai++) {
+              if (allEls[ai] === tmEl) { elIdx = ai; break; }
+            }
+            if (elIdx >= 0) {
+              var r = tmEl.getBoundingClientRect();
+              if (r.width > 0 && r.height > 0) {
+                results.push({ containerIdx: i, elIndex: elIdx, text: tmText });
+              }
+            }
+            break;
+          }
+        }
+      }
+      return results;
+    });
+
+    if (relativeInfos.length === 0) return 0;
+    console.log(`  Found ${relativeInfos.length} relative timestamps to resolve via hover`);
+
+    var resolved = 0;
+
+    for (var ri = 0; ri < relativeInfos.length; ri++) {
+      var info = relativeInfos[ri];
+      try {
+        await page.evaluate(function(idx) {
+          var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
+          if (idx < containers.length) {
+            containers[idx].scrollIntoView({ block: 'center', behavior: 'instant' });
+          }
+        }, info.containerIdx);
+        await page.waitForTimeout(200);
+
+        var coords = await page.evaluate(function(args) {
+          var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
+          if (args.containerIdx >= containers.length) return null;
+          var el = containers[args.containerIdx];
+          var candidates = el.querySelectorAll('*');
+          if (args.elIndex >= candidates.length) return null;
+          var target = candidates[args.elIndex];
+          var r = target.getBoundingClientRect();
+          if (r.width === 0 || r.height === 0) return null;
+          return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+        }, { containerIdx: info.containerIdx, elIndex: info.elIndex });
+
+        if (!coords) continue;
+
+        await page.mouse.move(coords.x, coords.y);
+        await page.waitForTimeout(500);
+
+        var absoluteTs = await page.evaluate(function(args) {
+          var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
+          if (args.containerIdx >= containers.length) return null;
+          var el = containers[args.containerIdx];
+
+          var candidates = el.querySelectorAll('*');
+          if (args.elIndex < candidates.length) {
+            var hovered = candidates[args.elIndex];
+            var ta = hovered.getAttribute('title') || '';
+            if (ta && ta.length > 0 && ta.length < 100 && !/^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i.test(ta)) {
+              return ta;
+            }
+            var aa = hovered.getAttribute('aria-label') || '';
+            if (aa && aa.length > 0 && aa.length < 100 && !/^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i.test(aa)) {
+              return aa;
+            }
+          }
+
+          var tooltipSelectors = [
+            '[role="tooltip"]',
+            '[class*="tooltip" i]',
+            '[class*="Tooltip"]',
+            '[class*="popover" i]',
+            '[class*="Popover"]',
+            '[data-radix-popper-content-wrapper]',
+            '[data-state="open"][class*="Content"]',
+            '[data-side]'
+          ];
+          var allTooltips = document.querySelectorAll(tooltipSelectors.join(', '));
+          for (var ti = 0; ti < allTooltips.length; ti++) {
+            var tt = (allTooltips[ti].textContent || '').trim();
+            if (tt.length > 0 && tt.length < 100 && !/^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i.test(tt)) {
+              if (/\d{1,2}:\d{2}\s*(?:am|pm)/i.test(tt) || /\w+\s+\d{1,2},?\s+\d{4}/i.test(tt) || /^\d{4}-\d{2}/.test(tt)) {
+                return tt;
+              }
+            }
+          }
+
+          return null;
+        }, { containerIdx: info.containerIdx, elIndex: info.elIndex });
+
+        if (absoluteTs) {
+          await page.evaluate(function(args) {
+            var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
+            if (args.idx < containers.length) {
+              containers[args.idx].setAttribute('data-resolved-timestamp', args.ts);
+            }
+          }, { idx: info.containerIdx, ts: absoluteTs });
+          console.log(`  [Hover TS] Container ${info.containerIdx}: "${info.text}" -> "${absoluteTs}"`);
+          resolved++;
+        }
+
+        await page.mouse.move(0, 0);
+        await page.waitForTimeout(100);
+      } catch (e) {
+      }
+    }
+
+    return resolved;
+  }
+
   private async hoverDurationElements(page: Page): Promise<number> {
     var durationIndices: number[] = await page.evaluate(function() {
       var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
@@ -845,17 +982,29 @@ export class ReplitScraper {
       var evEventType = (el.getAttribute('data-event-type') || '').toLowerCase();
       var evCy = (el.getAttribute('data-cy') || '').toLowerCase();
 
-      var relativePattern = /^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i;
-
       var timestamp = null as any;
-      var tsModuleEls = el.querySelectorAll('[class*="Timestamp-module"], [class*="timestamp-module"]');
-      for (var tmi = 0; tmi < tsModuleEls.length; tmi++) {
-        var tmText = (tsModuleEls[tmi].textContent || '').trim();
-        if (tmText.length > 0 && tmText.length < 100 && !relativePattern.test(tmText)) {
-          timestamp = tmText;
-          break;
+
+      var resolvedTs = el.getAttribute('data-resolved-timestamp');
+      if (resolvedTs && resolvedTs.length > 0) {
+        timestamp = resolvedTs;
+      }
+
+      if (!timestamp) {
+        var realTsMatch = rawText.match(/(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})/i);
+        if (realTsMatch) timestamp = realTsMatch[1];
+      }
+
+      if (!timestamp) {
+        var tsModuleEls = el.querySelectorAll('[class*="Timestamp-module"], [class*="timestamp-module"]');
+        for (var tmi = 0; tmi < tsModuleEls.length; tmi++) {
+          var tmText = (tsModuleEls[tmi].textContent || '').trim();
+          if (tmText.length > 0 && tmText.length < 100) {
+            timestamp = tmText;
+            break;
+          }
         }
       }
+
       if (!timestamp) {
         var timeEl = el.querySelector('time');
         if (timeEl) {
@@ -867,14 +1016,7 @@ export class ReplitScraper {
           }
         }
       }
-      if (!timestamp) {
-        var realTsMatch = rawText.match(/(\d{1,2}:\d{2}\s*(?:am|pm),\s*\w+\s+\d{1,2},\s*\d{4})/i);
-        if (realTsMatch) timestamp = realTsMatch[1];
-      }
-      if (!timestamp) {
-        var relMatch = rawText.match(/(\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago)/i);
-        if (relMatch) timestamp = relMatch[1];
-      }
+
       if (!timestamp) timestamp = prevTimestamp;
 
       var innerUserMarker = el.querySelector('[data-cy="user-message"], [data-event-type="user-message"], [class*="userMessage"], [class*="UserMessage"]');
@@ -1261,6 +1403,13 @@ export class ReplitScraper {
 
     if (expandedCount > 0) {
       await page.waitForTimeout(1500);
+    }
+
+    // ===== PHASE 2: Resolve relative timestamps via hover =====
+    console.log('  Phase 2: Resolving relative timestamps via hover...');
+    var tsResolved = await this.resolveRelativeTimestamps(page);
+    if (tsResolved > 0) {
+      console.log(`  Resolved ${tsResolved} relative timestamps to absolute`);
     }
 
     // ===== PHASE 2.5: Hover over duration elements to capture precise tooltips =====
