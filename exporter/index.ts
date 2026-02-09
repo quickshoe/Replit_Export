@@ -101,7 +101,9 @@ async function main() {
     .option('-f, --full', 'Full extraction: git commits, work tracking, checkpoints, hover durations', false)
     .option('-c, --cutoff <date>', 'Timestamp cutoff — only include data from this date onward (e.g. 2025-01-15 or "Jan 15, 2025")')
     .option('-o, --output <dir>', 'Output directory', OUTPUT_DIR)
-    .option('--debug-session', 'Trace session restore step-by-step and dump debug-session.json', false);
+    .option('--debug-session', 'Trace session restore step-by-step and dump debug-session.json', false)
+    .option('--debug-login', 'Delete session, trace full login flow, dump debug-login.json', false)
+    .option('--debug-url <url>', 'Load a Replit URL with full diagnostics, dump debug-url.json');
 
   program.parse();
   const options = program.opts();
@@ -126,6 +128,42 @@ async function main() {
       await scraper.debugSession();
     } catch (err: any) {
       console.error('Debug session error:', err.message);
+    } finally {
+      await scraper.close();
+    }
+    process.exit(0);
+  }
+
+  if (options.debugLogin) {
+    console.log('\n=== Debug Login Mode ===');
+    console.log('This will delete your session and trace the full login flow.\n');
+    const scraper = new ReplitScraper();
+    try {
+      await scraper.init();
+      await scraper.debugLogin();
+    } catch (err: any) {
+      console.error('Debug login error:', err.message);
+    } finally {
+      await scraper.close();
+    }
+    process.exit(0);
+  }
+
+  if (options.debugUrl) {
+    console.log('\n=== Debug URL Mode ===');
+    console.log('Loading URL with full diagnostics: ' + options.debugUrl + '\n');
+    const scraper = new ReplitScraper();
+    try {
+      await scraper.init();
+      const isLoggedIn = await scraper.checkLoggedIn();
+      if (!isLoggedIn) {
+        console.log('Not logged in. Please run without --debug-url first to log in.');
+        await scraper.close();
+        process.exit(1);
+      }
+      await scraper.debugUrl(options.debugUrl);
+    } catch (err: any) {
+      console.error('Debug URL error:', err.message);
     } finally {
       await scraper.close();
     }

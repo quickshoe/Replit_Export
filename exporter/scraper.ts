@@ -472,6 +472,508 @@ export class ReplitScraper {
     console.log('========================================\n');
   }
 
+  async debugLogin(): Promise<void> {
+    if (!this.context || !this.page) throw new Error('Browser not initialized');
+
+    var debug: any = {
+      timestamp: new Date().toISOString(),
+      mode: 'debug-login',
+      steps: []
+    };
+
+    var step = function(name: string, data: any) {
+      var entry = { step: name, time: new Date().toISOString(), data: data };
+      debug.steps.push(entry);
+      console.log('\n--- ' + name + ' ---');
+      console.log(JSON.stringify(data, null, 2));
+    };
+
+    step('session_cleared', {
+      sessionFileExisted: fs.existsSync(SESSION_FILE),
+      action: 'Deleted session file to force fresh login'
+    });
+    if (fs.existsSync(SESSION_FILE)) {
+      fs.unlinkSync(SESSION_FILE);
+    }
+
+    step('navigating_to_login', { url: 'https://replit.com/login' });
+    try {
+      await this.page.goto('https://replit.com/login', {
+        waitUntil: 'domcontentloaded',
+        timeout: 30000
+      });
+    } catch (err: any) {
+      step('login_page_nav_error', { error: err.message });
+    }
+
+    await this.page.waitForTimeout(2000);
+    step('login_page_loaded', {
+      url: this.page.url(),
+      title: await this.page.title().catch(function() { return '<failed>'; }),
+      isPageError: await this.isPageError(this.page)
+    });
+
+    var urlLog: Array<{time: string, url: string, trigger: string}> = [];
+    var cookieLog: Array<{time: string, event: string, cookies: any[]}> = [];
+
+    var self = this;
+    var page = this.page;
+    var context = this.context;
+
+    page.on('framenavigated', function(frame) {
+      if (frame === page.mainFrame()) {
+        var entry = {
+          time: new Date().toISOString(),
+          url: frame.url(),
+          trigger: 'framenavigated'
+        };
+        urlLog.push(entry);
+        console.log('  [NAV] ' + frame.url());
+      }
+    });
+
+    var responseLog: Array<{time: string, url: string, status: number, statusText: string}> = [];
+    page.on('response', function(response) {
+      var resUrl = response.url();
+      if (resUrl.includes('replit.com') && (response.status() >= 300 && response.status() < 400 || response.status() === 425)) {
+        var entry = {
+          time: new Date().toISOString(),
+          url: resUrl,
+          status: response.status(),
+          statusText: response.statusText()
+        };
+        responseLog.push(entry);
+        console.log('  [HTTP ' + response.status() + '] ' + resUrl.substring(0, 100));
+      }
+    });
+
+    var pageErrors: Array<{time: string, message: string}> = [];
+    page.on('pageerror', function(error) {
+      pageErrors.push({
+        time: new Date().toISOString(),
+        message: error.message.substring(0, 500)
+      });
+    });
+
+    console.log('\n========================================');
+    console.log('Please log in to Replit in the browser window.');
+    console.log('All URL changes, redirects, cookie changes,');
+    console.log('and page errors will be captured.');
+    console.log('(5 minute timeout)');
+    console.log('========================================\n');
+
+    var startTime = Date.now();
+    var timeout = 300000;
+    var loginDetected = false;
+    var lastCookieSnapshot = '';
+
+    while (Date.now() - startTime < timeout && !loginDetected) {
+      await page.waitForTimeout(2000);
+
+      var currentUrl = page.url();
+      var cookies = await context.cookies('https://replit.com');
+      var cookieSnapshot = cookies.map(function(c) { return c.name; }).sort().join(',');
+
+      if (cookieSnapshot !== lastCookieSnapshot) {
+        var authCookies = cookies.filter(function(c) {
+          return c.name === 'connect.sid' || c.name === 'replit_authed' || c.name === 'ajs_user_id';
+        });
+        cookieLog.push({
+          time: new Date().toISOString(),
+          event: 'cookies_changed',
+          cookies: cookies.map(function(c) {
+            return { name: c.name, domain: c.domain, secure: c.secure, httpOnly: c.httpOnly };
+          })
+        });
+        if (authCookies.length > 0) {
+          console.log('  [AUTH] Auth cookies detected: ' + authCookies.map(function(c) { return c.name; }).join(', '));
+        }
+        lastCookieSnapshot = cookieSnapshot;
+      }
+
+      var hasAuth = cookies.some(function(c) {
+        return c.name === 'connect.sid' || c.name === 'replit_authed' || c.name === 'ajs_user_id';
+      });
+
+      var isOnAuthPage = currentUrl.includes('/login') || currentUrl.includes('/signup') || currentUrl.includes('/__/auth') || currentUrl.includes('github.com');
+
+      if (hasAuth && !isOnAuthPage) {
+        loginDetected = true;
+        break;
+      }
+
+      if (hasAuth && isOnAuthPage) {
+        console.log('  Auth cookies present but still on auth page, waiting for redirect...');
+      }
+
+      var bodyText = await page.evaluate(function() {
+        return document.body ? document.body.innerText : '';
+      }).catch(function() { return ''; });
+
+      if (bodyText.includes('HTTP ERROR 425') || bodyText.includes('ERR_TOO_EARLY')) {
+        step('http_425_detected', { url: currentUrl });
+        console.log('  HTTP 425 detected, reloading...');
+        try {
+          await page.reload({ waitUntil: 'domcontentloaded', timeout: 15000 });
+        } catch {}
+        await page.waitForTimeout(2000);
+      }
+
+      var elapsed = Math.round((Date.now() - startTime) / 1000);
+      if (elapsed % 10 === 0) {
+        process.stdout.write('\r  Waiting for login... (' + elapsed + 's, URL: ' + currentUrl.substring(0, 60) + ')');
+      }
+    }
+
+    step('login_detection_result', {
+      loginDetected: loginDetected,
+      finalUrl: page.url(),
+      elapsedSeconds: Math.round((Date.now() - startTime) / 1000)
+    });
+
+    if (loginDetected) {
+      await page.waitForTimeout(3000);
+
+      var postLoginUrl = page.url();
+      step('post_login_state', {
+        url: postLoginUrl,
+        isPageError: await this.isPageError(page),
+        title: await page.title().catch(function() { return '<failed>'; })
+      });
+
+      if (await this.isPageError(page)) {
+        step('post_login_page_error', { action: 'reloading' });
+        try {
+          await page.reload({ waitUntil: 'domcontentloaded', timeout: 15000 });
+          await page.waitForTimeout(3000);
+        } catch {}
+        step('after_error_reload', {
+          url: page.url(),
+          isPageError: await this.isPageError(page)
+        });
+      }
+
+      if (this.isLoginPage(page.url())) {
+        step('still_on_login_after_auth', { action: 'navigating to home' });
+        try {
+          await page.goto('https://replit.com/~', { waitUntil: 'domcontentloaded', timeout: 30000 });
+          await page.waitForTimeout(3000);
+        } catch {}
+        step('forced_home_nav', {
+          url: page.url(),
+          isPageError: await this.isPageError(page)
+        });
+      }
+
+      console.log('\n  Saving session...');
+      var storageState = await context.storageState();
+      fs.writeFileSync(SESSION_FILE, JSON.stringify(storageState, null, 2));
+      step('session_saved', {
+        path: path.resolve(SESSION_FILE),
+        cookieCount: (storageState.cookies || []).length
+      });
+    }
+
+    step('url_transition_log', { transitions: urlLog });
+    step('cookie_change_log', { changes: cookieLog });
+    step('redirect_responses', { responses: responseLog });
+    step('page_errors', { errors: pageErrors });
+
+    var bodySnippet = await page.evaluate(function() {
+      return document.body ? document.body.innerText.substring(0, 2000) : '';
+    }).catch(function() { return '<failed>'; });
+
+    step('final_page_state', {
+      url: page.url(),
+      title: await page.title().catch(function() { return '<failed>'; }),
+      bodySnippet: bodySnippet,
+      isLoginPage: this.isLoginPage(page.url()),
+      isPageError: await this.isPageError(page)
+    });
+
+    var verdict = 'unknown';
+    if (loginDetected && !this.isLoginPage(page.url()) && !await this.isPageError(page)) {
+      verdict = 'LOGIN_SUCCESS: logged in and session saved';
+    } else if (loginDetected && this.isLoginPage(page.url())) {
+      verdict = 'LOGIN_PARTIAL: auth cookies detected but still on login page';
+    } else if (loginDetected && await this.isPageError(page)) {
+      verdict = 'LOGIN_ERROR: logged in but page error after login';
+    } else {
+      verdict = 'LOGIN_TIMEOUT: login not detected within timeout';
+    }
+    step('verdict', { result: verdict });
+
+    var debugFile = './debug-login.json';
+    fs.writeFileSync(debugFile, JSON.stringify(debug, null, 2));
+    console.log('\n========================================');
+    console.log('Debug output saved to: ' + path.resolve(debugFile));
+    console.log('Verdict: ' + verdict);
+    console.log('========================================\n');
+  }
+
+  async debugUrl(targetUrl: string): Promise<void> {
+    if (!this.context || !this.page) throw new Error('Browser not initialized');
+
+    var debug: any = {
+      timestamp: new Date().toISOString(),
+      mode: 'debug-url',
+      targetUrl: targetUrl,
+      steps: []
+    };
+
+    var step = function(name: string, data: any) {
+      var entry = { step: name, time: new Date().toISOString(), data: data };
+      debug.steps.push(entry);
+      console.log('\n--- ' + name + ' ---');
+      console.log(JSON.stringify(data, null, 2));
+    };
+
+    var page = this.page;
+    var context = this.context;
+
+    var fullUrl = targetUrl.startsWith('http') ? targetUrl : 'https://replit.com/' + targetUrl;
+    step('target', { inputUrl: targetUrl, resolvedUrl: fullUrl });
+
+    var replitCookies = await context.cookies('https://replit.com');
+    var authCookies = replitCookies.filter(function(c) {
+      return c.name === 'connect.sid' || c.name === 'replit_authed' || c.name === 'ajs_user_id';
+    });
+    step('pre_nav_auth_state', {
+      totalCookies: replitCookies.length,
+      authCookies: authCookies.map(function(c) {
+        return { name: c.name, domain: c.domain, expires: c.expires > 0 ? new Date(c.expires * 1000).toISOString() : 'session' };
+      }),
+      hasSession: authCookies.length > 0
+    });
+
+    var urlLog: Array<{time: string, url: string, trigger: string}> = [];
+    var responseLog: Array<{time: string, url: string, status: number, headers?: any}> = [];
+    var pageErrors: Array<{time: string, message: string}> = [];
+
+    page.on('framenavigated', function(frame) {
+      if (frame === page.mainFrame()) {
+        urlLog.push({
+          time: new Date().toISOString(),
+          url: frame.url(),
+          trigger: 'framenavigated'
+        });
+        console.log('  [NAV] ' + frame.url());
+      }
+    });
+
+    page.on('response', function(response) {
+      var resUrl = response.url();
+      if (resUrl.includes('replit.com')) {
+        var status = response.status();
+        if (status >= 300 && status < 400 || status >= 400) {
+          responseLog.push({
+            time: new Date().toISOString(),
+            url: resUrl.substring(0, 200),
+            status: status
+          });
+          if (status >= 400) {
+            console.log('  [HTTP ' + status + '] ' + resUrl.substring(0, 100));
+          }
+        }
+      }
+    });
+
+    page.on('pageerror', function(error) {
+      pageErrors.push({
+        time: new Date().toISOString(),
+        message: error.message.substring(0, 500)
+      });
+    });
+
+    step('navigating', { url: fullUrl, method: 'goto' });
+    var navStartTime = Date.now();
+    try {
+      await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    } catch (err: any) {
+      step('navigation_timeout', { error: err.message, elapsed: Date.now() - navStartTime });
+    }
+    step('navigation_complete', {
+      url: page.url(),
+      elapsed: Date.now() - navStartTime,
+      matchesTarget: page.url().includes(new URL(fullUrl).pathname)
+    });
+
+    await page.waitForTimeout(2000);
+
+    if (await this.isPageError(page)) {
+      var errorBody = await page.evaluate(function() {
+        return document.body ? document.body.innerText.substring(0, 1000) : '';
+      }).catch(function() { return '<failed>'; });
+      step('page_error_detected', {
+        url: page.url(),
+        bodySnippet: errorBody
+      });
+
+      for (var retry = 1; retry <= 3; retry++) {
+        step('retry_' + retry, { action: 'reload', backoffMs: retry * 2000 });
+        await page.waitForTimeout(retry * 2000);
+        try {
+          await page.reload({ waitUntil: 'domcontentloaded', timeout: 15000 });
+        } catch {}
+        await page.waitForTimeout(2000);
+        if (!await this.isPageError(page)) {
+          step('retry_' + retry + '_success', { url: page.url() });
+          break;
+        }
+        var retryBody = await page.evaluate(function() {
+          return document.body ? document.body.innerText.substring(0, 500) : '';
+        }).catch(function() { return '<failed>'; });
+        step('retry_' + retry + '_still_error', { bodySnippet: retryBody });
+      }
+    }
+
+    if (this.isLoginPage(page.url())) {
+      step('redirected_to_login', {
+        url: page.url(),
+        message: 'Session may be expired or invalid'
+      });
+    }
+
+    step('url_settle_check', { startUrl: page.url() });
+    var getPath = function(u: string) {
+      try { return new URL(u).pathname.replace(/\/+$/, '').toLowerCase(); }
+      catch { return u.replace(/\/+$/, '').toLowerCase(); }
+    };
+    var targetPath = getPath(fullUrl);
+    for (var urlCheck = 0; urlCheck < 10; urlCheck++) {
+      var currentPath = getPath(page.url());
+      if (currentPath === targetPath) {
+        step('url_settled', { attempt: urlCheck, url: page.url() });
+        break;
+      }
+      if (urlCheck === 9) {
+        step('url_never_settled', {
+          expected: targetPath,
+          actual: currentPath,
+          currentUrl: page.url()
+        });
+      }
+      await page.waitForTimeout(1000);
+    }
+
+    step('dom_stability_check', { action: 'comparing body.children.length over 500ms windows' });
+    for (var domCheck = 0; domCheck < 5; domCheck++) {
+      var snap1 = await page.evaluate(function() {
+        return document.body ? document.body.children.length : 0;
+      }).catch(function() { return -1; });
+      await page.waitForTimeout(500);
+      var snap2 = await page.evaluate(function() {
+        return document.body ? document.body.children.length : 0;
+      }).catch(function() { return -1; });
+      if (snap1 === snap2 && snap1 > 0) {
+        step('dom_stabilized', { attempt: domCheck, childrenCount: snap1 });
+        break;
+      }
+      if (domCheck === 4) {
+        step('dom_unstable', { snap1: snap1, snap2: snap2 });
+      }
+    }
+
+    var chatSelectors = [
+      '[class*="eventContainer"]', '[class*="EventContainer"]', '[data-event-type]',
+      '[class*="AgentChat"]', '[class*="ChatPanel"]', '[data-testid*="chat"]',
+      '[class*="message" i]', '[class*="Message"]',
+    ];
+    step('chat_detection_start', { selectors: chatSelectors });
+
+    var chatFound = false;
+    for (var chatAttempt = 0; chatAttempt < 12; chatAttempt++) {
+      try {
+        var selector = chatSelectors.join(', ');
+        var matched = await page.evaluate(function(sel) {
+          var els = document.querySelectorAll(sel);
+          var results = [];
+          for (var i = 0; i < Math.min(els.length, 5); i++) {
+            var el = els[i];
+            var tag = el.tagName.toLowerCase();
+            var cls = el.className ? (typeof el.className === 'string' ? el.className.substring(0, 100) : '') : '';
+            var text = (el.textContent || '').substring(0, 80);
+            results.push(tag + ' class="' + cls + '" text="' + text + '"');
+          }
+          return { count: els.length, samples: results };
+        }, selector);
+
+        if (matched.count > 0) {
+          step('chat_detected', { attempt: chatAttempt, count: matched.count, samples: matched.samples });
+          chatFound = true;
+          break;
+        }
+      } catch {}
+
+      if (await this.isPageError(page)) {
+        step('chat_poll_page_error', { attempt: chatAttempt });
+        try {
+          await page.reload({ waitUntil: 'domcontentloaded', timeout: 15000 });
+          await page.waitForTimeout(2000);
+        } catch {}
+      }
+
+      await page.waitForTimeout(5000);
+    }
+
+    if (!chatFound) {
+      step('chat_not_found', {
+        message: 'Chat content not detected after 60s of polling'
+      });
+
+      var domSnapshot = await page.evaluate(function() {
+        var body = document.body;
+        if (!body) return { childCount: 0, children: [] };
+        var children = [];
+        for (var i = 0; i < Math.min(body.children.length, 20); i++) {
+          var child = body.children[i];
+          var tag = child.tagName.toLowerCase();
+          var cls = child.className ? (typeof child.className === 'string' ? child.className.substring(0, 120) : '') : '';
+          var text = (child.textContent || '').substring(0, 100);
+          children.push(tag + ' class="' + cls + '" text="' + text.replace(/\n/g, ' ') + '"');
+        }
+        return { childCount: body.children.length, children: children };
+      }).catch(function() { return { childCount: -1, children: [] }; });
+
+      step('dom_snapshot', domSnapshot);
+    }
+
+    step('url_transition_log', { transitions: urlLog });
+    step('http_responses', { responses: responseLog });
+    step('page_errors', { errors: pageErrors });
+
+    var bodySnippet = await page.evaluate(function() {
+      return document.body ? document.body.innerText.substring(0, 2000) : '';
+    }).catch(function() { return '<failed>'; });
+
+    step('final_page_state', {
+      url: page.url(),
+      title: await page.title().catch(function() { return '<failed>'; }),
+      bodySnippet: bodySnippet,
+      isLoginPage: this.isLoginPage(page.url()),
+      isPageError: await this.isPageError(page)
+    });
+
+    var verdict = 'unknown';
+    if (this.isLoginPage(page.url())) {
+      verdict = 'NOT_LOGGED_IN: redirected to login page';
+    } else if (await this.isPageError(page)) {
+      verdict = 'PAGE_ERROR: page not loading correctly';
+    } else if (chatFound) {
+      verdict = 'SUCCESS: page loaded and chat content detected';
+    } else {
+      verdict = 'PARTIAL: page loaded but chat content not found';
+    }
+    step('verdict', { result: verdict });
+
+    var debugFile = './debug-url.json';
+    fs.writeFileSync(debugFile, JSON.stringify(debug, null, 2));
+    console.log('\n========================================');
+    console.log('Debug output saved to: ' + path.resolve(debugFile));
+    console.log('Verdict: ' + verdict);
+    console.log('========================================\n');
+  }
+
   private async handleLoginRedirect(page: Page): Promise<void> {
     const currentUrl = page.url();
     
