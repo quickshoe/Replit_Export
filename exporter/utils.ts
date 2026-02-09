@@ -587,6 +587,41 @@ export function exportWorkSummaryCsv(exports: ReplExport[], outputDir: string): 
     });
   }
 
+  if (rows.length > 1) {
+    const grandTotal = {
+      totalSeconds: 0, workDoneActions: 0, itemsReadLines: 0,
+      codeChangedPlus: 0, codeChangedMinus: 0, agentUsage: 0,
+    };
+    for (const dateKey of sortedDates) {
+      const day = dailyMap[dateKey];
+      grandTotal.totalSeconds += day.totalSeconds;
+      grandTotal.workDoneActions += day.workDoneActions;
+      grandTotal.itemsReadLines += day.itemsReadLines;
+      grandTotal.codeChangedPlus += day.codeChangedPlus;
+      grandTotal.codeChangedMinus += day.codeChangedMinus;
+      grandTotal.agentUsage += day.agentUsage;
+    }
+
+    const gtHours = Math.floor(grandTotal.totalSeconds / 3600);
+    const gtMins = Math.floor((grandTotal.totalSeconds % 3600) / 60);
+    const gtSecs = grandTotal.totalSeconds % 60;
+    const gtParts: string[] = [];
+    if (gtHours > 0) gtParts.push(`${gtHours} hour${gtHours !== 1 ? 's' : ''}`);
+    if (gtMins > 0) gtParts.push(`${gtMins} minute${gtMins !== 1 ? 's' : ''}`);
+    if (gtSecs > 0 || gtParts.length === 0) gtParts.push(`${gtSecs} second${gtSecs !== 1 ? 's' : ''}`);
+
+    rows.push({
+      date: 'TOTAL',
+      timeWorked: gtParts.join(' '),
+      durationMinutes: Math.round((grandTotal.totalSeconds / 60) * 100) / 100,
+      workDoneActions: grandTotal.workDoneActions,
+      itemsReadLines: grandTotal.itemsReadLines,
+      codeChangedPlus: grandTotal.codeChangedPlus,
+      codeChangedMinus: grandTotal.codeChangedMinus,
+      agentUsage: Math.round(grandTotal.agentUsage * 100) / 100,
+    });
+  }
+
   const columns = [
     { key: 'date', label: 'Date' },
     { key: 'timeWorked', label: 'Time worked' },
@@ -811,6 +846,78 @@ export function exportCombinedWorkSummaryCsv(exports: ReplExport[], outputDir: s
     pushDaySubtotal(currentRepl, replTotals);
   }
 
+  const dailyCrossRepo: Record<string, {
+    totalSeconds: number; workDoneActions: number; itemsReadLines: number;
+    codeChangedPlus: number; codeChangedMinus: number; agentUsage: number;
+  }> = {};
+  for (const key of Object.keys(dailyMap)) {
+    const entry = dailyMap[key];
+    if (!dailyCrossRepo[entry.date]) {
+      dailyCrossRepo[entry.date] = {
+        totalSeconds: 0, workDoneActions: 0, itemsReadLines: 0,
+        codeChangedPlus: 0, codeChangedMinus: 0, agentUsage: 0,
+      };
+    }
+    const dt = dailyCrossRepo[entry.date];
+    dt.totalSeconds += entry.totalSeconds;
+    dt.workDoneActions += entry.workDoneActions;
+    dt.itemsReadLines += entry.itemsReadLines;
+    dt.codeChangedPlus += entry.codeChangedPlus;
+    dt.codeChangedMinus += entry.codeChangedMinus;
+    dt.agentUsage += entry.agentUsage;
+  }
+
+  const sortedDailyDates = Object.keys(dailyCrossRepo).sort(function(a, b) {
+    if (a === 'Unknown') return 1;
+    if (b === 'Unknown') return -1;
+    return a.localeCompare(b);
+  });
+
+  if (sortedDailyDates.length > 1 || Object.keys(dailyMap).length > sortedDailyDates.length) {
+    for (const dateKey of sortedDailyDates) {
+      const dt = dailyCrossRepo[dateKey];
+      rows.push({
+        replName: 'DAILY TOTAL',
+        date: dateKey,
+        timeWorked: formatDuration(dt.totalSeconds),
+        durationMinutes: Math.round((dt.totalSeconds / 60) * 100) / 100,
+        workDoneActions: dt.workDoneActions,
+        itemsReadLines: dt.itemsReadLines,
+        codeChangedPlus: dt.codeChangedPlus,
+        codeChangedMinus: dt.codeChangedMinus,
+        agentUsage: Math.round(dt.agentUsage * 100) / 100,
+      });
+    }
+  }
+
+  const grandTotal = {
+    totalSeconds: 0, workDoneActions: 0, itemsReadLines: 0,
+    codeChangedPlus: 0, codeChangedMinus: 0, agentUsage: 0,
+  };
+  for (const key of Object.keys(dailyMap)) {
+    const entry = dailyMap[key];
+    grandTotal.totalSeconds += entry.totalSeconds;
+    grandTotal.workDoneActions += entry.workDoneActions;
+    grandTotal.itemsReadLines += entry.itemsReadLines;
+    grandTotal.codeChangedPlus += entry.codeChangedPlus;
+    grandTotal.codeChangedMinus += entry.codeChangedMinus;
+    grandTotal.agentUsage += entry.agentUsage;
+  }
+
+  if (grandTotal.totalSeconds > 0 || grandTotal.agentUsage > 0) {
+    rows.push({
+      replName: 'GRAND TOTAL',
+      date: '',
+      timeWorked: formatDuration(grandTotal.totalSeconds),
+      durationMinutes: Math.round((grandTotal.totalSeconds / 60) * 100) / 100,
+      workDoneActions: grandTotal.workDoneActions,
+      itemsReadLines: grandTotal.itemsReadLines,
+      codeChangedPlus: grandTotal.codeChangedPlus,
+      codeChangedMinus: grandTotal.codeChangedMinus,
+      agentUsage: Math.round(grandTotal.agentUsage * 100) / 100,
+    });
+  }
+
   const columns = [
     { key: 'replName', label: 'Repl name' },
     { key: 'date', label: 'Date' },
@@ -825,6 +932,25 @@ export function exportCombinedWorkSummaryCsv(exports: ReplExport[], outputDir: s
   const filePath = path.join(outputDir, `${runTimestamp}_work-summary.csv`);
   writeCsv(columns, rows, filePath);
   return filePath;
+}
+
+export function filterByCutoff(data: ReplExport, cutoff: Date): ReplExport {
+  const cutoffTime = cutoff.getTime();
+
+  function isAfterCutoff(timestamp: string | null): boolean {
+    if (!timestamp) return true;
+    const parsed = parseTimestamp(timestamp);
+    if (!parsed) return true;
+    return parsed.getTime() >= cutoffTime;
+  }
+
+  return {
+    ...data,
+    messages: data.messages.filter(m => isAfterCutoff(m.timestamp)),
+    checkpoints: (data.checkpoints || []).filter(c => isAfterCutoff(c.timestamp)),
+    workEntries: (data.workEntries || []).filter(w => isAfterCutoff(w.timestamp)),
+    gitCommits: (data.gitCommits || []).filter(g => isAfterCutoff(g.timestamp)),
+  };
 }
 
 export function ensureDir(dir: string): void {

@@ -149,6 +149,7 @@ npx tsx exporter/index.ts --help
 | `--dry-run` | `-d` | Only export the first URL (for testing) |
 | `--verbose` | `-v` | Show detailed per-item logging |
 | `--full` | `-f` | Full extraction: git commits, work tracking, checkpoints |
+| `--cutoff <date>` | `-c` | Only include data from this date onward (e.g. `2025-01-15` or `Jan 15, 2025`) |
 | `--output <dir>` | `-o` | Output directory (default: `./exports`) |
 | `--clear-session` | | Delete saved session cookies and exit |
 | `--help` | `-h` | Show help |

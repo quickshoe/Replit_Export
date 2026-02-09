@@ -4,7 +4,7 @@ import { Command } from 'commander';
 import * as readline from 'readline';
 import * as fs from 'fs';
 import { ReplitScraper } from './scraper';
-import { saveJsonExport, exportAllEventsCsv, exportChatCsv, exportChatMarkdown, exportWorkTrackingCsv, exportWorkSummaryCsv, exportCombinedWorkSummaryCsv, ensureDir, formatRunTimestamp, extractReplName } from './utils';
+import { saveJsonExport, exportAllEventsCsv, exportChatCsv, exportChatMarkdown, exportWorkTrackingCsv, exportWorkSummaryCsv, exportCombinedWorkSummaryCsv, ensureDir, formatRunTimestamp, extractReplName, filterByCutoff } from './utils';
 import type { ReplExport } from './types';
 
 const OUTPUT_DIR = './exports';
@@ -40,6 +40,53 @@ async function promptForUrls(): Promise<string[]> {
   });
 }
 
+function parseCutoffDate(input: string): Date | null {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+
+  const isoMatch = trimmed.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (isoMatch) {
+    const d = new Date(parseInt(isoMatch[1]), parseInt(isoMatch[2]) - 1, parseInt(isoMatch[3]));
+    if (!isNaN(d.getTime())) return d;
+  }
+
+  const namedMatch = trimmed.match(/^(\w+)\s+(\d{1,2}),?\s*(\d{4})$/);
+  if (namedMatch) {
+    const d = new Date(`${namedMatch[1]} ${namedMatch[2]}, ${namedMatch[3]}`);
+    if (!isNaN(d.getTime())) return d;
+  }
+
+  const fallback = new Date(trimmed);
+  if (!isNaN(fallback.getTime())) return fallback;
+
+  return null;
+}
+
+async function promptForCutoff(): Promise<Date | null> {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  return new Promise((resolve) => {
+    rl.question('\nAdd timestamp cutoff (e.g. 2025-01-15 or Jan 15, 2025) or press Enter for all data:\n> ', (answer) => {
+      rl.close();
+      const trimmed = answer.trim();
+      if (!trimmed) {
+        resolve(null);
+        return;
+      }
+      const parsed = parseCutoffDate(trimmed);
+      if (parsed) {
+        resolve(parsed);
+      } else {
+        console.log(`  Could not parse "${trimmed}" as a date — exporting all data.`);
+        resolve(null);
+      }
+    });
+  });
+}
+
 async function main() {
   const program = new Command();
 
@@ -52,6 +99,7 @@ async function main() {
     .option('--clear-session', 'Delete saved session and exit', false)
     .option('-v, --verbose', 'Show detailed per-item logs (hover, precision merge)', false)
     .option('-f, --full', 'Full extraction: git commits, work tracking, checkpoints, hover durations', false)
+    .option('-c, --cutoff <date>', 'Timestamp cutoff — only include data from this date onward (e.g. 2025-01-15 or "Jan 15, 2025")')
     .option('-o, --output <dir>', 'Output directory', OUTPUT_DIR);
 
   program.parse();
@@ -124,6 +172,21 @@ async function main() {
       process.exit(0);
     }
 
+    let cutoffDate: Date | null = null;
+    if (options.cutoff) {
+      cutoffDate = parseCutoffDate(options.cutoff);
+      if (cutoffDate) {
+        console.log(`\nTimestamp cutoff: ${cutoffDate.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}`);
+      } else {
+        console.log(`\nCould not parse cutoff "${options.cutoff}" — exporting all data.`);
+      }
+    } else {
+      cutoffDate = await promptForCutoff();
+      if (cutoffDate) {
+        console.log(`Timestamp cutoff: ${cutoffDate.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}`);
+      }
+    }
+
     if (options.dryRun && urls.length > 1) {
       console.log(`\n[DRY RUN] Only processing first URL: ${urls[0]}`);
       urls = [urls[0]];
@@ -138,7 +201,15 @@ async function main() {
       console.log(`\n[${i + 1}/${urls.length}] Processing: ${url}`);
       
       try {
-        const data = await scraper.scrapeRepl(url, outputDir, isFullMode);
+        let data = await scraper.scrapeRepl(url, outputDir, isFullMode);
+        if (cutoffDate) {
+          const beforeCount = data.messages.length;
+          data = filterByCutoff(data, cutoffDate);
+          const afterCount = data.messages.length;
+          if (beforeCount !== afterCount) {
+            console.log(`  Cutoff filter: ${beforeCount} → ${afterCount} messages (removed ${beforeCount - afterCount} before cutoff)`);
+          }
+        }
         exports.push(data);
 
         const replName = extractReplName(url);

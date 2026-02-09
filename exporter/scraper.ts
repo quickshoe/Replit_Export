@@ -285,9 +285,6 @@ export class ReplitScraper {
         console.log('Navigation timeout on domcontentloaded, continuing anyway...');
       }
     }
-    
-    console.log('Waiting for page to settle...');
-    await page.waitForTimeout(5000);
 
     await this.handleLoginRedirect(page);
 
@@ -299,12 +296,9 @@ export class ReplitScraper {
       } catch (err) {
         console.log('Re-navigation timeout, continuing...');
       }
-      await page.waitForTimeout(5000);
       
       await this.handleLoginRedirect(page);
     }
-
-    await page.waitForTimeout(2000);
 
     // === PRE-CHECK: Wait for Replit Agent to finish working ===
     await this.waitForAgentIdle(page);
@@ -362,8 +356,21 @@ export class ReplitScraper {
         cp.durationSeconds = calculateDuration(cp.timestamp, messages);
       }
     } else {
-      // Standard mode: extract only user/agent messages with timestamps
-      console.log('Step 2: Extracting chat messages...');
+      // Standard mode: open Git tab briefly just to click one relative timestamp,
+      // which converts ALL timestamps across the UI to absolute format.
+      console.log('Step 2: Converting timestamps to absolute format...');
+      try {
+        await this.convertTimestampsViaGitTab(page);
+      } catch (err) {
+        console.log('  WARNING: Could not convert timestamps:', (err as Error).message);
+        console.log('  Timestamps may remain relative.');
+      }
+
+      console.log('Step 3: Navigating back to chat panel...');
+      await this.navigateToChatPanel(page, fullUrl);
+      await page.waitForTimeout(1000);
+
+      console.log('Step 4: Extracting chat messages...');
       const extracted = await this.extractAllData(page, outputDir);
       messages = extracted.messages;
     }
@@ -1604,6 +1611,119 @@ export class ReplitScraper {
       console.log(`  Sidebar elements: ${navDebug.sidebarElements.length}`);
     } catch (err) {
       console.log('  Could not save navigation debug info');
+    }
+  }
+
+  private async convertTimestampsViaGitTab(page: Page): Promise<void> {
+    console.log('  Opening Git tab to convert relative timestamps...');
+
+    var gitPanelOpen = false;
+
+    var strategy1 = await page.evaluate(function() {
+      var clicked = false;
+      var candidates = document.querySelectorAll(
+        '[role="tab"], [data-testid*="tab"], button, a, ' +
+        '[role="button"], [class*="Tab"], [class*="tool" i], ' +
+        '[class*="sidebar" i] button, [class*="sidebar" i] a, ' +
+        '[class*="nav" i] button, [class*="nav" i] a, ' +
+        '[class*="dock" i] button, [class*="dock" i] a, ' +
+        '[class*="panel" i] button, [class*="panel" i] a'
+      );
+      for (var i = 0; i < candidates.length; i++) {
+        var el = candidates[i];
+        var text = (el.textContent || '').trim().toLowerCase();
+        var ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+        var title = (el.getAttribute('title') || '').toLowerCase();
+        var testId = el.getAttribute('data-testid') || '';
+
+        var isGitRelated = (
+          text === 'git' ||
+          text === 'version control' ||
+          text === 'history' ||
+          text === 'commits' ||
+          ariaLabel.indexOf('git') >= 0 ||
+          ariaLabel.indexOf('version control') >= 0 ||
+          title.indexOf('git') >= 0 ||
+          title === 'version control' ||
+          testId.indexOf('git') >= 0 ||
+          testId.indexOf('version-control') >= 0
+        );
+
+        if (isGitRelated) {
+          el.click();
+          clicked = true;
+          break;
+        }
+      }
+      return { clicked: clicked };
+    });
+
+    if (strategy1.clicked) {
+      await page.waitForTimeout(2000);
+      gitPanelOpen = await this.verifyGitPanelOpen(page);
+    }
+
+    if (!gitPanelOpen) {
+      var strategy2 = await page.evaluate(function() {
+        var clicked = false;
+        var svgContainers = document.querySelectorAll('button, a, [role="button"], [role="tab"]');
+        for (var i = 0; i < svgContainers.length; i++) {
+          var el = svgContainers[i];
+          var svg = el.querySelector('svg');
+          if (!svg) continue;
+          var paths = svg.querySelectorAll('path, circle, line');
+          if (paths.length >= 2 && paths.length <= 8) {
+            var ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+            var title = (el.getAttribute('title') || '').toLowerCase();
+            if (ariaLabel.indexOf('git') >= 0 || title.indexOf('git') >= 0 ||
+                ariaLabel.indexOf('version') >= 0 || title.indexOf('version') >= 0) {
+              el.click();
+              clicked = true;
+              break;
+            }
+          }
+        }
+        return { clicked: clicked };
+      });
+
+      if (strategy2.clicked) {
+        await page.waitForTimeout(2000);
+        gitPanelOpen = await this.verifyGitPanelOpen(page);
+      }
+    }
+
+    if (!gitPanelOpen) {
+      try {
+        await page.keyboard.press('Control+Shift+G');
+        await page.waitForTimeout(2000);
+        gitPanelOpen = await this.verifyGitPanelOpen(page);
+      } catch (err) {}
+    }
+
+    if (!gitPanelOpen) {
+      console.log('  Could not open Git tab — timestamps may remain relative');
+      return;
+    }
+
+    console.log('  Git panel opened, clicking Commits sub-tab...');
+    await page.evaluate(function() {
+      var buttons = document.querySelectorAll('button, [role="tab"], a');
+      for (var i = 0; i < buttons.length; i++) {
+        var text = (buttons[i].textContent || '').trim().toLowerCase();
+        if (text === 'commits' || text === 'commit history') {
+          buttons[i].click();
+          break;
+        }
+      }
+    });
+    await page.waitForTimeout(1000);
+
+    var clickedRelativeTs = await this.clickOneRelativeTimestamp(page);
+    if (clickedRelativeTs) {
+      console.log('  Successfully converted all timestamps to absolute format');
+      await page.waitForTimeout(500);
+    } else {
+      console.log('  No relative timestamps found (may already be absolute)');
     }
   }
 
