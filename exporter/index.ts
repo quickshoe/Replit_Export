@@ -100,7 +100,8 @@ async function main() {
     .option('-v, --verbose', 'Show detailed per-item logs (hover, precision merge)', false)
     .option('-f, --full', 'Full extraction: git commits, work tracking, checkpoints, hover durations', false)
     .option('-c, --cutoff <date>', 'Timestamp cutoff — only include data from this date onward (e.g. 2025-01-15 or "Jan 15, 2025")')
-    .option('-o, --output <dir>', 'Output directory', OUTPUT_DIR);
+    .option('-o, --output <dir>', 'Output directory', OUTPUT_DIR)
+    .option('--debug-session', 'Trace session restore step-by-step and dump debug-session.json', false);
 
   program.parse();
   const options = program.opts();
@@ -112,6 +113,21 @@ async function main() {
       console.log('Session cleared successfully.');
     } else {
       console.log('No session file found.');
+    }
+    process.exit(0);
+  }
+
+  if (options.debugSession) {
+    console.log('\n=== Debug Session Mode ===');
+    console.log('Tracing session restore step-by-step...\n');
+    const scraper = new ReplitScraper();
+    try {
+      await scraper.init();
+      await scraper.debugSession();
+    } catch (err: any) {
+      console.error('Debug session error:', err.message);
+    } finally {
+      await scraper.close();
     }
     process.exit(0);
   }

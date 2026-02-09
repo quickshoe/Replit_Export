@@ -316,6 +316,139 @@ export class ReplitScraper {
     return url.includes('/login') || url.includes('/signup') || url.includes('/auth');
   }
 
+  async debugSession(): Promise<void> {
+    if (!this.context || !this.page) throw new Error('Browser not initialized');
+
+    var debug: any = {
+      timestamp: new Date().toISOString(),
+      steps: []
+    };
+
+    var step = function(name: string, data: any) {
+      var entry = { step: name, time: new Date().toISOString(), data: data };
+      debug.steps.push(entry);
+      console.log('\n--- ' + name + ' ---');
+      console.log(JSON.stringify(data, null, 2));
+    };
+
+    step('session_file_check', {
+      exists: fs.existsSync(SESSION_FILE),
+      path: path.resolve(SESSION_FILE)
+    });
+
+    if (fs.existsSync(SESSION_FILE)) {
+      try {
+        var raw = fs.readFileSync(SESSION_FILE, 'utf-8');
+        var parsed = JSON.parse(raw);
+        var cookieSummary = (parsed.cookies || []).map(function(c: any) {
+          return {
+            name: c.name,
+            domain: c.domain,
+            path: c.path,
+            expires: c.expires ? new Date(c.expires * 1000).toISOString() : 'session',
+            secure: c.secure,
+            httpOnly: c.httpOnly,
+            sameSite: c.sameSite
+          };
+        });
+        step('session_file_contents', {
+          fileSizeBytes: raw.length,
+          cookieCount: (parsed.cookies || []).length,
+          originCount: (parsed.origins || []).length,
+          cookies: cookieSummary,
+          originDomains: (parsed.origins || []).map(function(o: any) { return o.origin; })
+        });
+      } catch (err: any) {
+        step('session_file_parse_error', { error: err.message });
+      }
+    }
+
+    step('browser_state_before_nav', {
+      currentUrl: this.page.url(),
+      userDataDir: this.userDataDir
+    });
+
+    var browserCookiesBefore = await this.context.cookies('https://replit.com');
+    step('browser_cookies_before_nav', {
+      count: browserCookiesBefore.length,
+      cookies: browserCookiesBefore.map(function(c) {
+        return { name: c.name, domain: c.domain, expires: c.expires };
+      })
+    });
+
+    step('navigating_to_home', { url: 'https://replit.com/~' });
+    try {
+      await this.page.goto('https://replit.com/~', {
+        waitUntil: 'domcontentloaded',
+        timeout: 30000
+      });
+      step('navigation_complete', { url: this.page.url() });
+    } catch (err: any) {
+      step('navigation_error', { error: err.message, url: this.page.url() });
+    }
+
+    await this.page.waitForTimeout(3000);
+    step('after_3s_settle', { url: this.page.url() });
+
+    var bodySnippet = await this.page.evaluate(function() {
+      var text = document.body ? document.body.innerText : '';
+      return text.substring(0, 2000);
+    }).catch(function() { return '<evaluate failed>'; });
+
+    var pageTitle = await this.page.title().catch(function() { return '<title failed>'; });
+
+    step('page_content', {
+      title: pageTitle,
+      bodySnippet: bodySnippet,
+      isLoginPage: this.isLoginPage(this.page.url()),
+      isPageError: await this.isPageError(this.page)
+    });
+
+    var browserCookiesAfter = await this.context.cookies('https://replit.com');
+    step('browser_cookies_after_nav', {
+      count: browserCookiesAfter.length,
+      cookies: browserCookiesAfter.map(function(c) {
+        return { name: c.name, domain: c.domain, expires: c.expires };
+      })
+    });
+
+    if (await this.isPageError(this.page)) {
+      step('retrying_after_page_error', { action: 'reload' });
+      try {
+        await this.page.reload({ waitUntil: 'domcontentloaded', timeout: 15000 });
+        await this.page.waitForTimeout(3000);
+        var bodyAfterReload = await this.page.evaluate(function() {
+          var text = document.body ? document.body.innerText : '';
+          return text.substring(0, 2000);
+        }).catch(function() { return '<evaluate failed>'; });
+        step('after_reload', {
+          url: this.page.url(),
+          isPageError: await this.isPageError(this.page),
+          bodySnippet: bodyAfterReload
+        });
+      } catch (err: any) {
+        step('reload_error', { error: err.message });
+      }
+    }
+
+    var finalVerdict = 'unknown';
+    if (this.isLoginPage(this.page.url())) {
+      finalVerdict = 'NOT_LOGGED_IN: redirected to login page';
+    } else if (await this.isPageError(this.page)) {
+      finalVerdict = 'PAGE_ERROR: page not working after retries';
+    } else {
+      finalVerdict = 'LOGGED_IN: session appears valid';
+    }
+    step('verdict', { result: finalVerdict });
+
+    var debugFile = './debug-session.json';
+    fs.writeFileSync(debugFile, JSON.stringify(debug, null, 2));
+    console.log('\n========================================');
+    console.log('Debug output saved to: ' + path.resolve(debugFile));
+    console.log('Verdict: ' + finalVerdict);
+    console.log('========================================\n');
+  }
+
   private async handleLoginRedirect(page: Page): Promise<void> {
     const currentUrl = page.url();
     
@@ -357,19 +490,35 @@ export class ReplitScraper {
       console.log(`Already on target URL, skipping navigation: ${currentBrowserUrl}`);
     } else {
       console.log(`Navigating to: ${fullUrl}`);
-      try {
-        await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-        console.log('Page DOM loaded successfully.');
-      } catch (err) {
-        console.log('Navigation timeout on domcontentloaded, continuing anyway...');
+      var navSuccess = false;
+      for (var navAttempt = 1; navAttempt <= 3; navAttempt++) {
+        try {
+          await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        } catch (err) {
+          console.log('Navigation timeout on domcontentloaded, continuing...');
+        }
+
+        await page.waitForTimeout(2000);
+
+        if (await this.isPageError(page)) {
+          if (navAttempt < 3) {
+            console.log('  Page error detected (attempt ' + navAttempt + '/3). Reloading in ' + (navAttempt * 2) + 's...');
+            await page.waitForTimeout(navAttempt * 2000);
+            continue;
+          }
+          console.log('  Page error persists after 3 attempts. Proceeding anyway...');
+        }
+        navSuccess = true;
+        break;
+      }
+      if (navSuccess) {
+        console.log('Page loaded successfully.');
       }
     }
 
     await this.handleLoginRedirect(page);
 
-    // Wait for the Replit SPA chat content to render before proceeding
-    console.log('Waiting for chat panel to render...');
-    await this.waitForChatContent(page);
+    await this.waitForPageReady(page, fullUrl);
 
     // === PRE-CHECK: Wait for Replit Agent to finish working ===
     await this.waitForAgentIdle(page);
@@ -775,27 +924,77 @@ export class ReplitScraper {
     return { working: false, debug: 'No "Working" text and no DOM changes in 3s — agent appears idle' };
   }
 
-  private async waitForChatContent(page: Page): Promise<void> {
-    const chatSelectors = [
+  private async waitForPageReady(page: Page, targetUrl: string): Promise<void> {
+    console.log('Waiting for page to be ready...');
+
+    var getPath = function(u: string) {
+      try { return new URL(u).pathname.replace(/\/+$/, '').toLowerCase(); }
+      catch { return u.replace(/\/+$/, '').toLowerCase(); }
+    };
+    var targetPath = getPath(targetUrl);
+
+    for (var urlCheck = 0; urlCheck < 15; urlCheck++) {
+      var currentPath = getPath(page.url());
+      if (currentPath === targetPath) break;
+      if (urlCheck === 0) {
+        console.log('  Waiting for URL to settle to target...');
+      }
+      await page.waitForTimeout(1000);
+    }
+
+    console.log('  URL settled: ' + page.url());
+
+    var domStabilized = false;
+    for (var domCheck = 0; domCheck < 5; domCheck++) {
+      var snap1 = await page.evaluate(function() {
+        return document.body ? document.body.children.length : 0;
+      }).catch(function() { return -1; });
+
+      await page.waitForTimeout(500);
+
+      var snap2 = await page.evaluate(function() {
+        return document.body ? document.body.children.length : 0;
+      }).catch(function() { return -1; });
+
+      if (snap1 === snap2 && snap1 > 0) {
+        domStabilized = true;
+        break;
+      }
+    }
+
+    if (!domStabilized) {
+      console.log('  DOM still changing, waiting 2s more...');
+      await page.waitForTimeout(2000);
+    }
+
+    console.log('  Waiting for chat panel to render...');
+
+    var chatSelectors = [
       '[class*="eventContainer"]', '[class*="EventContainer"]', '[data-event-type]',
       '[class*="AgentChat"]', '[class*="ChatPanel"]', '[data-testid*="chat"]',
       '[class*="message" i]', '[class*="Message"]',
-      '[class*="Tab"]', '[role="tab"]',
     ];
-    const selector = chatSelectors.join(', ');
+    var selector = chatSelectors.join(', ');
 
-    for (let attempt = 0; attempt < 10; attempt++) {
+    for (var attempt = 0; attempt < 12; attempt++) {
       try {
         await page.waitForSelector(selector, { timeout: 5000 });
         console.log('  Chat panel detected.');
         return;
       } catch {
-        if (attempt < 9) {
-          console.log(`  Waiting for chat content to render... (attempt ${attempt + 1}/10)`);
+        if (await this.isPageError(page)) {
+          console.log('  Page error while waiting for chat. Reloading...');
+          try {
+            await page.reload({ waitUntil: 'domcontentloaded', timeout: 15000 });
+            await page.waitForTimeout(2000);
+          } catch {}
+        }
+        if (attempt < 11) {
+          console.log('  Waiting for chat content to render... (attempt ' + (attempt + 1) + '/12)');
         }
       }
     }
-    console.log('  Chat content not found after 50s. Proceeding anyway...');
+    console.log('  Chat content not found after 60s. Proceeding anyway...');
   }
 
   private async waitForAgentIdle(page: Page): Promise<void> {
