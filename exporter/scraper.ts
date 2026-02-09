@@ -1,6 +1,7 @@
 import { chromium, Browser, BrowserContext, Page } from 'playwright';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import type { ChatMessage, Checkpoint, WorkEntry, GitCommit, ReplExport } from './types';
 import { calculateDuration, extractReplName, parseTimestamp } from './utils';
 
@@ -24,41 +25,40 @@ export class ReplitScraper {
   private browser: Browser | null = null;
   private context: BrowserContext | null = null;
   private page: Page | null = null;
+  private userDataDir: string | null = null;
   private verbose: boolean = false;
 
   setVerbose(v: boolean): void { this.verbose = v; }
 
   async init(): Promise<void> {
     console.log('Launching browser...');
-    this.browser = await chromium.launch({
+
+    const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'replit-exporter-'));
+
+    const launchOptions: any = {
       headless: false,
+      viewport: { width: 1440, height: 900 },
       args: [
         '--window-size=1440,900',
         '--no-first-run',
         '--no-default-browser-check',
       ],
-    });
-
-    const contextOptions: any = {
-      viewport: { width: 1440, height: 900 },
     };
 
     if (fs.existsSync(SESSION_FILE)) {
-      console.log('Found existing session, attempting to restore...');
+      console.log('Found existing session, restoring...');
       try {
         const storageState = JSON.parse(fs.readFileSync(SESSION_FILE, 'utf-8'));
-        contextOptions.storageState = storageState;
-        this.context = await this.browser.newContext(contextOptions);
-        console.log('Session restored successfully.');
+        launchOptions.storageState = storageState;
+        console.log('Session restored.');
       } catch (err) {
-        console.log('Failed to restore session, creating new context.');
-        this.context = await this.browser.newContext(contextOptions);
+        console.log('Failed to parse session file, starting fresh.');
       }
-    } else {
-      this.context = await this.browser.newContext(contextOptions);
     }
 
-    this.page = await this.context.newPage();
+    this.userDataDir = userDataDir;
+    this.context = await chromium.launchPersistentContext(userDataDir, launchOptions);
+    this.page = this.context.pages()[0] || await this.context.newPage();
   }
 
   async minimizeWindow(): Promise<void> {
@@ -3038,11 +3038,21 @@ export class ReplitScraper {
   }
 
   async close(): Promise<void> {
-    if (this.browser) {
-      await this.browser.close();
-      this.browser = null;
+    if (this.context) {
+      await this.context.close();
       this.context = null;
       this.page = null;
+    } else if (this.browser) {
+      await this.browser.close();
+      this.browser = null;
+      this.page = null;
+    }
+
+    if (this.userDataDir) {
+      try {
+        fs.rmSync(this.userDataDir, { recursive: true, force: true });
+      } catch {}
+      this.userDataDir = null;
     }
   }
 
