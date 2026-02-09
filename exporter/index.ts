@@ -143,12 +143,12 @@ async function main() {
   }
   
   try {
+    const isLoggedIn = await scraper.checkLoggedIn();
+    
     await scraper.init();
 
-    const isLoggedIn = await scraper.checkLoggedIn();
     if (!isLoggedIn) {
       console.log('Not logged in. Opening login page...');
-      // Restore the window so the user can see the login page
       await scraper.restoreWindow();
       await scraper.waitForLogin();
     } else {

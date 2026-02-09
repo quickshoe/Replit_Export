@@ -203,36 +203,28 @@ export class ReplitScraper {
   }
 
   async checkLoggedIn(): Promise<boolean> {
-    if (!this.context || !this.page) throw new Error('Browser not initialized');
-
-    const cookies = await this.context.cookies('https://replit.com');
-    const hasAuthCookies = cookies.some(c => 
-      c.name.includes('connect.sid') || 
-      c.name.includes('replit') ||
-      c.name.includes('ajs_user_id')
-    );
-    
-    if (!hasAuthCookies) {
-      console.log('No auth cookies found in session.');
+    if (!fs.existsSync(SESSION_FILE)) {
+      console.log('No session file found.');
       return false;
     }
 
     try {
-      await this.page.goto('https://replit.com/~', { 
-        waitUntil: 'domcontentloaded',
-        timeout: 30000 
-      });
-      
-      await this.page.waitForTimeout(1000);
-      
-      const currentUrl = this.page.url();
-      
-      if (this.isLoginPage(currentUrl)) {
+      const storageState = JSON.parse(fs.readFileSync(SESSION_FILE, 'utf-8'));
+      const cookies = storageState.cookies || [];
+      const hasAuthCookies = cookies.some((c: any) =>
+        c.name.includes('connect.sid') ||
+        c.name.includes('replit_authed') ||
+        c.name.includes('ajs_user_id')
+      );
+
+      if (!hasAuthCookies) {
+        console.log('Session file exists but contains no auth cookies.');
         return false;
       }
-      
+
       return true;
     } catch {
+      console.log('Failed to read session file.');
       return false;
     }
   }
@@ -299,6 +291,10 @@ export class ReplitScraper {
       
       await this.handleLoginRedirect(page);
     }
+
+    // Wait for the Replit SPA chat content to render before proceeding
+    console.log('Waiting for chat panel to render...');
+    await this.waitForChatContent(page);
 
     // === PRE-CHECK: Wait for Replit Agent to finish working ===
     await this.waitForAgentIdle(page);
@@ -698,48 +694,40 @@ export class ReplitScraper {
     });
 
     if (snapshot2.count !== snapshot1.count || snapshot2.lastContent !== snapshot1.lastContent) {
-      return { working: true, debug: 'Chat DOM changed during 2s observation (' + snapshot1.count + ' -> ' + snapshot2.count + ' containers) — agent is working' };
+      return { working: true, debug: 'Chat DOM changed during 3s observation (' + snapshot1.count + ' -> ' + snapshot2.count + ' containers) — agent is working' };
     }
 
-    return { working: false, debug: 'No "Working" text and no DOM changes in 2s — agent appears idle' };
+    return { working: false, debug: 'No "Working" text and no DOM changes in 3s — agent appears idle' };
+  }
+
+  private async waitForChatContent(page: Page): Promise<void> {
+    const chatSelectors = [
+      '[class*="eventContainer"]', '[class*="EventContainer"]', '[data-event-type]',
+      '[class*="AgentChat"]', '[class*="ChatPanel"]', '[data-testid*="chat"]',
+      '[class*="message" i]', '[class*="Message"]',
+      '[class*="Tab"]', '[role="tab"]',
+    ];
+    const selector = chatSelectors.join(', ');
+
+    for (let attempt = 0; attempt < 10; attempt++) {
+      try {
+        await page.waitForSelector(selector, { timeout: 5000 });
+        console.log('  Chat panel detected.');
+        return;
+      } catch {
+        if (attempt < 9) {
+          console.log(`  Waiting for chat content to render... (attempt ${attempt + 1}/10)`);
+        }
+      }
+    }
+    console.log('  Chat content not found after 50s. Proceeding anyway...');
   }
 
   private async waitForAgentIdle(page: Page): Promise<void> {
     console.log('\nPre-check: Checking if Replit Agent is currently working...');
 
-    // Wait for the page to have some interactive content before checking
-    const panelSelectors = [
-      '[class*="eventContainer"]', '[class*="EventContainer"]', '[data-event-type]',
-      '[class*="AgentChat"]', '[class*="ChatPanel"]', '[data-testid*="chat"]',
-      '[class*="Tab"]', '[role="tab"]',
-    ];
-    const panelSelector = panelSelectors.join(', ');
-
-    let panelFound = false;
-    for (let attempt = 0; attempt < 5; attempt++) {
-      try {
-        await page.waitForSelector(panelSelector, { timeout: 8000 });
-        panelFound = true;
-        break;
-      } catch {
-        if (attempt < 4) {
-          console.log(`  Waiting for page content to load... (attempt ${attempt + 1}/5)`);
-          await page.waitForTimeout(3000);
-        }
-      }
-    }
-
-    if (!panelFound) {
-      console.log('  Page content not found after waiting. Assuming agent is idle.');
-      console.log('\n========================================');
-      console.log('IMPORTANT: Do NOT use Replit Agent while the scraper is running.');
-      console.log('Agent activity during scraping will cause unreliable results.');
-      console.log('========================================\n');
-      return;
-    }
-
-    // DOM-based detection: check for "Working" text + 2-second snapshot comparison
-    console.log('  Running DOM check (2-second observation)...');
+    // DOM-based detection: check for "Working" text + 3-second snapshot comparison
+    console.log('  Running DOM check (3-second observation)...');
     var domResult = await this.checkAgentWorkingViaDom(page);
     console.log('  DOM check: ' + domResult.debug);
 
