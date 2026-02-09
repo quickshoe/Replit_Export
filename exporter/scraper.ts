@@ -189,66 +189,127 @@ export class ReplitScraper {
     }
 
     if (loginSuccess) {
-      console.log('\nLogin detected! Saving session...');
-      
+      console.log('\nLogin detected! Waiting for page to settle...');
+
+      const currentLoginUrl = loginPage.url();
+      if (currentLoginUrl.includes('/__/auth') || currentLoginUrl.includes('/login') || currentLoginUrl.includes('/signup')) {
+        try {
+          await loginPage.goto('https://replit.com/~', {
+            waitUntil: 'domcontentloaded',
+            timeout: 30000
+          });
+        } catch {}
+      }
+
+      await loginPage.waitForTimeout(3000);
+
+      if (await this.isPageError(loginPage)) {
+        console.log('Page error after login, retrying navigation...');
+        try {
+          await loginPage.goto('https://replit.com/~', {
+            waitUntil: 'domcontentloaded',
+            timeout: 30000
+          });
+          await loginPage.waitForTimeout(3000);
+        } catch {}
+      }
+
+      console.log('Saving session...');
       const storageState = await this.context.storageState();
       fs.writeFileSync(SESSION_FILE, JSON.stringify(storageState, null, 2));
       console.log(`Session saved to ${SESSION_FILE}`);
     } else {
       console.log('\n========================================');
       console.log('Automatic login detection did not complete.');
-      console.log('If you have successfully logged in via OAuth, we can still try to continue.');
+      console.log('Attempting to verify login by navigating to home page...');
       console.log('========================================\n');
-      
-      const finalCookies = await this.context.cookies('https://replit.com');
-      const hasAnyCookies = finalCookies.length > 0;
-      
-      if (hasAnyCookies) {
-        console.log('Some cookies were set. Attempting to continue anyway...');
-        const storageState = await this.context.storageState();
-        fs.writeFileSync(SESSION_FILE, JSON.stringify(storageState, null, 2));
-        console.log(`Session saved to ${SESSION_FILE}`);
-        console.log('If scraping fails, please run with --clear-session and try again.');
-      } else {
-        throw new Error('Failed to detect login. Please try again with --clear-session');
+
+      try {
+        await loginPage.goto('https://replit.com/~', {
+          waitUntil: 'domcontentloaded',
+          timeout: 30000
+        });
+        await loginPage.waitForTimeout(3000);
+
+        if (await this.isPageError(loginPage)) {
+          await loginPage.reload({ waitUntil: 'domcontentloaded', timeout: 15000 });
+          await loginPage.waitForTimeout(3000);
+        }
+
+        const verifyUrl = loginPage.url();
+        if (!this.isLoginPage(verifyUrl)) {
+          console.log('Login verified via navigation! Saving session...');
+          const storageState = await this.context.storageState();
+          fs.writeFileSync(SESSION_FILE, JSON.stringify(storageState, null, 2));
+          console.log(`Session saved to ${SESSION_FILE}`);
+        } else {
+          throw new Error('Not logged in after verification. Please try again with --clear-session');
+        }
+      } catch (verifyErr: any) {
+        if (verifyErr.message && verifyErr.message.includes('Not logged in')) throw verifyErr;
+        throw new Error('Failed to verify login. Please try again with --clear-session');
       }
     }
 
   }
 
-  async checkLoggedIn(): Promise<boolean> {
-    if (!this.context || !this.page) throw new Error('Browser not initialized');
-
-    const cookies = await this.context.cookies('https://replit.com');
-    const hasAuthCookies = cookies.some(c =>
-      c.name.includes('connect.sid') ||
-      c.name.includes('replit') ||
-      c.name.includes('ajs_user_id')
-    );
-
-    if (!hasAuthCookies) {
-      console.log('No auth cookies found in session.');
-      return false;
-    }
-
+  private async isPageError(page: Page): Promise<boolean> {
     try {
-      await this.page.goto('https://replit.com/~', {
-        waitUntil: 'domcontentloaded',
-        timeout: 30000
+      var bodyText = await page.evaluate(function() {
+        return document.body ? document.body.innerText : '';
       });
-
-      await this.page.waitForTimeout(1000);
-
-      const currentUrl = this.page.url();
-
-      if (this.isLoginPage(currentUrl)) {
-        return false;
-      }
-
-      return true;
+      return bodyText.includes('HTTP ERROR') ||
+        bodyText.includes('ERR_') ||
+        bodyText.includes("This page isn't working") ||
+        bodyText.includes('This site can') ||
+        bodyText.includes('took too long to respond');
     } catch {
       return false;
     }
+  }
+
+  async checkLoggedIn(): Promise<boolean> {
+    if (!this.context || !this.page) throw new Error('Browser not initialized');
+
+    if (!fs.existsSync(SESSION_FILE)) {
+      console.log('No session file found.');
+      return false;
+    }
+
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        await this.page.goto('https://replit.com/~', {
+          waitUntil: 'domcontentloaded',
+          timeout: 30000
+        });
+
+        await this.page.waitForTimeout(2000);
+
+        if (await this.isPageError(this.page)) {
+          if (attempt === 1) {
+            console.log('Page error on first attempt, retrying...');
+            await this.page.waitForTimeout(3000);
+            continue;
+          }
+          console.log('Page error persists after retry.');
+          return false;
+        }
+
+        const currentUrl = this.page.url();
+
+        if (this.isLoginPage(currentUrl)) {
+          console.log('Session expired — redirected to login.');
+          return false;
+        }
+
+        return true;
+      } catch {
+        if (attempt === 2) return false;
+        await this.page.waitForTimeout(3000);
+      }
+    }
+
+    return false;
   }
 
   private isLoginPage(url: string): boolean {
