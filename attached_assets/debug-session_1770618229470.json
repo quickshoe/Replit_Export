@@ -1,0 +1,792 @@
+{
+  "timestamp": "2026-02-09T06:22:57.727Z",
+  "steps": [
+    {
+      "step": "session_file_check",
+      "time": "2026-02-09T06:22:57.784Z",
+      "data": {
+        "exists": true,
+        "path": "/Users/joshuaallan/Documents/GitHub/Replit_Export/playwright-session.json"
+      }
+    },
+    {
+      "step": "session_file_contents",
+      "time": "2026-02-09T06:22:57.790Z",
+      "data": {
+        "fileSizeBytes": 196910,
+        "cookieCount": 68,
+        "originCount": 1,
+        "cookies": [
+          {
+            "name": "_GRECAPTCHA",
+            "domain": "www.google.com",
+            "path": "/recaptcha",
+            "expires": "2026-08-08T06:02:05.318Z",
+            "secure": true,
+            "httpOnly": true,
+            "sameSite": "None"
+          },
+          {
+            "name": "_gid",
+            "domain": ".replit.com",
+            "path": "/",
+            "expires": "2026-02-10T06:02:01.000Z",
+            "secure": false,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "_gcl_au",
+            "domain": ".replit.com",
+            "path": "/",
+            "expires": "2026-05-10T05:59:51.000Z",
+            "secure": false,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "coframe.user.token",
+            "domain": ".replit.com",
+            "path": "/",
+            "expires": "2027-03-16T06:02:01.000Z",
+            "secure": true,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "coframe.cvc",
+            "domain": ".replit.com",
+            "path": "/",
+            "expires": "2027-03-16T05:59:51.000Z",
+            "secure": true,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "coframe.lastVisitTime",
+            "domain": ".replit.com",
+            "path": "/",
+            "expires": "2027-03-16T05:59:51.000Z",
+            "secure": true,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "amplitudeSessionId",
+            "domain": "replit.com",
+            "path": "/",
+            "expires": "2026-02-09T06:32:44.000Z",
+            "secure": false,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "ajs_anonymous_id",
+            "domain": ".replit.com",
+            "path": "/",
+            "expires": "2027-02-09T06:02:44.000Z",
+            "secure": false,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "gating_id",
+            "domain": "replit.com",
+            "path": "/",
+            "expires": "1969-12-31T23:59:59.000Z",
+            "secure": false,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "__cf_bm",
+            "domain": ".hcaptcha.com",
+            "path": "/",
+            "expires": "2026-02-09T06:29:51.414Z",
+            "secure": true,
+            "httpOnly": true,
+            "sameSite": "None"
+          },
+          {
+            "name": "af_id",
+            "domain": ".appsflyer.com",
+            "path": "/",
+            "expires": "2027-03-11T06:02:02.125Z",
+            "secure": true,
+            "httpOnly": false,
+            "sameSite": "None"
+          },
+          {
+            "name": "afUserId",
+            "domain": ".replit.com",
+            "path": "/",
+            "expires": "2027-03-16T06:02:02.313Z",
+            "secure": false,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "af_id",
+            "domain": ".onelink.me",
+            "path": "/",
+            "expires": "2027-03-11T05:59:51.950Z",
+            "secure": true,
+            "httpOnly": false,
+            "sameSite": "None"
+          },
+          {
+            "name": "AF_SYNC",
+            "domain": ".replit.com",
+            "path": "/",
+            "expires": "2026-02-16T05:59:51.000Z",
+            "secure": false,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "_adora_user_id",
+            "domain": ".replit.com",
+            "path": "/",
+            "expires": "2027-02-09T05:59:52.000Z",
+            "secure": false,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "_adora_rate_limited",
+            "domain": ".replit.com",
+            "path": "/",
+            "expires": "2026-02-09T06:29:53.000Z",
+            "secure": false,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "m",
+            "domain": "m.stripe.com",
+            "path": "/",
+            "expires": "2027-03-16T06:02:22.407Z",
+            "secure": true,
+            "httpOnly": true,
+            "sameSite": "None"
+          },
+          {
+            "name": "__stripe_mid",
+            "domain": ".replit.com",
+            "path": "/",
+            "expires": "2027-02-09T06:02:04.000Z",
+            "secure": true,
+            "httpOnly": false,
+            "sameSite": "Strict"
+          },
+          {
+            "name": "__stripe_sid",
+            "domain": ".replit.com",
+            "path": "/",
+            "expires": "2026-02-09T06:32:04.000Z",
+            "secure": true,
+            "httpOnly": false,
+            "sameSite": "Strict"
+          },
+          {
+            "name": "IDE",
+            "domain": ".doubleclick.net",
+            "path": "/",
+            "expires": "2027-03-16T05:59:59.936Z",
+            "secure": true,
+            "httpOnly": true,
+            "sameSite": "None"
+          },
+          {
+            "name": "FPC",
+            "domain": ".replit.com",
+            "path": "/",
+            "expires": "2026-02-16T06:00:00.000Z",
+            "secure": true,
+            "httpOnly": false,
+            "sameSite": "None"
+          },
+          {
+            "name": "_ttp",
+            "domain": ".tiktok.com",
+            "path": "/",
+            "expires": "2027-03-06T06:00:01.420Z",
+            "secure": true,
+            "httpOnly": false,
+            "sameSite": "None"
+          },
+          {
+            "name": "c",
+            "domain": ".pointmediatracker.com",
+            "path": "/",
+            "expires": "2027-02-09T06:00:01.531Z",
+            "secure": true,
+            "httpOnly": false,
+            "sameSite": "None"
+          },
+          {
+            "name": "signals-sdk-user-id",
+            "domain": ".replit.com",
+            "path": "/",
+            "expires": "2027-02-09T06:00:01.000Z",
+            "secure": false,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "signals-sdk-session-id",
+            "domain": ".replit.com",
+            "path": "/",
+            "expires": "2026-02-09T06:30:01.000Z",
+            "secure": false,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "__spdt",
+            "domain": "replit.com",
+            "path": "/",
+            "expires": "2027-02-09T06:00:01.000Z",
+            "secure": false,
+            "httpOnly": false,
+            "sameSite": "Strict"
+          },
+          {
+            "name": "_switch_session_id",
+            "domain": ".replit.com",
+            "path": "/",
+            "expires": "2026-02-16T06:00:01.000Z",
+            "secure": false,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "__d_d_r__",
+            "domain": ".replit.com",
+            "path": "/",
+            "expires": "2026-08-08T06:00:01.000Z",
+            "secure": false,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "__d_d_r_l__",
+            "domain": ".replit.com",
+            "path": "/",
+            "expires": "2026-08-08T06:00:01.000Z",
+            "secure": false,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "_hjSessionUser_5199682",
+            "domain": ".replit.com",
+            "path": "/",
+            "expires": "2027-02-09T06:00:02.000Z",
+            "secure": true,
+            "httpOnly": false,
+            "sameSite": "None"
+          },
+          {
+            "name": "_hjSession_5199682",
+            "domain": ".replit.com",
+            "path": "/",
+            "expires": "2026-02-09T06:30:02.000Z",
+            "secure": true,
+            "httpOnly": false,
+            "sameSite": "None"
+          },
+          {
+            "name": "li_sugr",
+            "domain": ".linkedin.com",
+            "path": "/",
+            "expires": "2026-05-10T06:00:03.432Z",
+            "secure": true,
+            "httpOnly": false,
+            "sameSite": "None"
+          },
+          {
+            "name": "bcookie",
+            "domain": ".linkedin.com",
+            "path": "/",
+            "expires": "2027-02-09T06:00:03.432Z",
+            "secure": true,
+            "httpOnly": false,
+            "sameSite": "None"
+          },
+          {
+            "name": "lidc",
+            "domain": ".linkedin.com",
+            "path": "/",
+            "expires": "2026-02-10T06:00:02.660Z",
+            "secure": true,
+            "httpOnly": false,
+            "sameSite": "None"
+          },
+          {
+            "name": "_tt_enable_cookie",
+            "domain": ".replit.com",
+            "path": "/",
+            "expires": "2027-03-06T06:00:02.000Z",
+            "secure": false,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "_ttp",
+            "domain": ".replit.com",
+            "path": "/",
+            "expires": "2027-03-06T06:00:02.000Z",
+            "secure": false,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "UserMatchHistory",
+            "domain": ".linkedin.com",
+            "path": "/",
+            "expires": "2026-03-11T06:00:02.873Z",
+            "secure": true,
+            "httpOnly": false,
+            "sameSite": "None"
+          },
+          {
+            "name": "AnalyticsSyncHistory",
+            "domain": ".linkedin.com",
+            "path": "/",
+            "expires": "2026-03-11T06:00:02.873Z",
+            "secure": true,
+            "httpOnly": false,
+            "sameSite": "None"
+          },
+          {
+            "name": "ttcsid",
+            "domain": ".replit.com",
+            "path": "/",
+            "expires": "2027-03-06T06:00:03.000Z",
+            "secure": false,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "ttcsid_D004OSJC77U7QLNJ32IG",
+            "domain": ".replit.com",
+            "path": "/",
+            "expires": "2027-03-06T06:00:03.000Z",
+            "secure": false,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "bscookie",
+            "domain": ".www.linkedin.com",
+            "path": "/",
+            "expires": "2027-02-09T06:00:03.313Z",
+            "secure": true,
+            "httpOnly": true,
+            "sameSite": "None"
+          },
+          {
+            "name": "__cf_bm",
+            "domain": ".linkedin.com",
+            "path": "/",
+            "expires": "2026-02-09T06:30:03.313Z",
+            "secure": true,
+            "httpOnly": true,
+            "sameSite": "None"
+          },
+          {
+            "name": "_fbp",
+            "domain": ".replit.com",
+            "path": "/",
+            "expires": "2026-05-10T06:00:03.000Z",
+            "secure": false,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "_ga",
+            "domain": ".replit.com",
+            "path": "/",
+            "expires": "2027-03-16T06:02:01.751Z",
+            "secure": false,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "_octo",
+            "domain": ".github.com",
+            "path": "/",
+            "expires": "2027-02-09T06:00:16.788Z",
+            "secure": true,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "cpu_bucket",
+            "domain": ".github.com",
+            "path": "/",
+            "expires": "1969-12-31T23:59:59.000Z",
+            "secure": true,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "preferred_color_mode",
+            "domain": ".github.com",
+            "path": "/",
+            "expires": "1969-12-31T23:59:59.000Z",
+            "secure": true,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "_device_id",
+            "domain": "github.com",
+            "path": "/",
+            "expires": "2027-02-09T06:00:17.812Z",
+            "secure": true,
+            "httpOnly": true,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "tz",
+            "domain": ".github.com",
+            "path": "/",
+            "expires": "1969-12-31T23:59:59.000Z",
+            "secure": true,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "saved_user_sessions",
+            "domain": "github.com",
+            "path": "/",
+            "expires": "2026-05-10T05:01:17.403Z",
+            "secure": true,
+            "httpOnly": true,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "user_session",
+            "domain": "github.com",
+            "path": "/",
+            "expires": "2026-02-23T06:01:17.404Z",
+            "secure": true,
+            "httpOnly": true,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "__Host-user_session_same_site",
+            "domain": "github.com",
+            "path": "/",
+            "expires": "2026-02-23T06:01:17.404Z",
+            "secure": true,
+            "httpOnly": true,
+            "sameSite": "Strict"
+          },
+          {
+            "name": "tz",
+            "domain": "github.com",
+            "path": "/",
+            "expires": "1969-12-31T23:59:59.000Z",
+            "secure": true,
+            "httpOnly": true,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "color_mode",
+            "domain": ".github.com",
+            "path": "/",
+            "expires": "1969-12-31T23:59:59.000Z",
+            "secure": true,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "logged_in",
+            "domain": ".github.com",
+            "path": "/",
+            "expires": "2027-02-09T06:01:17.404Z",
+            "secure": true,
+            "httpOnly": true,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "dotcom_user",
+            "domain": ".github.com",
+            "path": "/",
+            "expires": "2027-02-09T06:01:17.404Z",
+            "secure": true,
+            "httpOnly": true,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "last_write_ms",
+            "domain": "github.com",
+            "path": "/",
+            "expires": "1969-12-31T23:59:59.000Z",
+            "secure": true,
+            "httpOnly": true,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "_gh_sess",
+            "domain": "github.com",
+            "path": "/",
+            "expires": "1969-12-31T23:59:59.000Z",
+            "secure": true,
+            "httpOnly": true,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "connect.sid",
+            "domain": "replit.com",
+            "path": "/",
+            "expires": "2026-02-16T06:01:30.335Z",
+            "secure": true,
+            "httpOnly": true,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "replit_authed",
+            "domain": "replit.com",
+            "path": "/",
+            "expires": "2026-02-16T06:01:30.507Z",
+            "secure": false,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "replit_statsig_stable_id",
+            "domain": "replit.com",
+            "path": "/",
+            "expires": "2027-02-09T06:01:30.682Z",
+            "secure": true,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "ajs_user_id",
+            "domain": ".replit.com",
+            "path": "/",
+            "expires": "2027-02-09T06:02:44.000Z",
+            "secure": false,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "ld_uid",
+            "domain": "replit.com",
+            "path": "/",
+            "expires": "1969-12-31T23:59:59.000Z",
+            "secure": false,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "__cf_bm",
+            "domain": ".replit.com",
+            "path": "/",
+            "expires": "2026-02-09T06:31:33.490Z",
+            "secure": true,
+            "httpOnly": true,
+            "sameSite": "None"
+          },
+          {
+            "name": "_cfuvid",
+            "domain": ".replit.com",
+            "path": "/",
+            "expires": "1969-12-31T23:59:59.000Z",
+            "secure": true,
+            "httpOnly": true,
+            "sameSite": "None"
+          },
+          {
+            "name": "sidebarClosed2",
+            "domain": "replit.com",
+            "path": "/",
+            "expires": "1969-12-31T23:59:59.000Z",
+            "secure": false,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "_ga_MPJY3F1YEL",
+            "domain": ".replit.com",
+            "path": "/",
+            "expires": "2027-03-16T06:02:44.138Z",
+            "secure": false,
+            "httpOnly": false,
+            "sameSite": "Lax"
+          },
+          {
+            "name": "_dd_s",
+            "domain": "replit.com",
+            "path": "/",
+            "expires": "2026-02-09T06:18:39.000Z",
+            "secure": false,
+            "httpOnly": false,
+            "sameSite": "Strict"
+          }
+        ],
+        "originDomains": [
+          "https://replit.com"
+        ]
+      }
+    },
+    {
+      "step": "browser_state_before_nav",
+      "time": "2026-02-09T06:22:57.791Z",
+      "data": {
+        "currentUrl": "about:blank",
+        "userDataDir": "/var/folders/jx/bq20fz9558l1f6v5cyhf672m0000gn/T/replit-exporter-2vHlQz"
+      }
+    },
+    {
+      "step": "browser_cookies_before_nav",
+      "time": "2026-02-09T06:22:57.796Z",
+      "data": {
+        "count": 0,
+        "cookies": []
+      }
+    },
+    {
+      "step": "navigating_to_home",
+      "time": "2026-02-09T06:22:57.796Z",
+      "data": {
+        "url": "https://replit.com/~"
+      }
+    },
+    {
+      "step": "navigation_complete",
+      "time": "2026-02-09T06:22:58.973Z",
+      "data": {
+        "url": "https://replit.com/login?source=home&goto=%2F%7E"
+      }
+    },
+    {
+      "step": "after_3s_settle",
+      "time": "2026-02-09T06:23:01.980Z",
+      "data": {
+        "url": "https://replit.com/login?source=home&goto=%2F%7E"
+      }
+    },
+    {
+      "step": "page_content",
+      "time": "2026-02-09T06:23:01.990Z",
+      "data": {
+        "title": "Log In - Replit",
+        "bodySnippet": "Log in to your account\nEMAIL OR USERNAME\nPASSWORD\nLog In\nForgot password?\nUse SSO login\nContinue with Google\nContinue with GitHub\nContinue with X\nContinue with Apple\nContinue with Facebook\nNew to Replit? Sign up\nGet help\nThis site is protected by reCAPTCHA Enterprise and the Google Privacy Policy and Terms of Service apply.\nIdea to app, fast",
+        "isLoginPage": true,
+        "isPageError": false
+      }
+    },
+    {
+      "step": "browser_cookies_after_nav",
+      "time": "2026-02-09T06:23:01.991Z",
+      "data": {
+        "count": 18,
+        "cookies": [
+          {
+            "name": "__cf_bm",
+            "domain": ".replit.com",
+            "expires": 1770619978.151362
+          },
+          {
+            "name": "_cfuvid",
+            "domain": ".replit.com",
+            "expires": -1
+          },
+          {
+            "name": "amplitudeSessionId",
+            "domain": "replit.com",
+            "expires": 1770619979
+          },
+          {
+            "name": "gating_id",
+            "domain": "replit.com",
+            "expires": -1
+          },
+          {
+            "name": "coframe.user.token",
+            "domain": ".replit.com",
+            "expires": 1805178179
+          },
+          {
+            "name": "coframe.cvc",
+            "domain": ".replit.com",
+            "expires": 1805178179
+          },
+          {
+            "name": "coframe.lastVisitTime",
+            "domain": ".replit.com",
+            "expires": 1805178179
+          },
+          {
+            "name": "_adora_user_id",
+            "domain": ".replit.com",
+            "expires": 1802154180
+          },
+          {
+            "name": "ajs_anonymous_id",
+            "domain": ".replit.com",
+            "expires": 1802154180
+          },
+          {
+            "name": "_adora_rate_limited",
+            "domain": ".replit.com",
+            "expires": 1770619980
+          },
+          {
+            "name": "afUserId",
+            "domain": ".replit.com",
+            "expires": 1805178180.606779
+          },
+          {
+            "name": "_ga",
+            "domain": ".replit.com",
+            "expires": 1805178180.65256
+          },
+          {
+            "name": "_gid",
+            "domain": ".replit.com",
+            "expires": 1770704580
+          },
+          {
+            "name": "AF_SYNC",
+            "domain": ".replit.com",
+            "expires": 1771222980
+          },
+          {
+            "name": "_gcl_au",
+            "domain": ".replit.com",
+            "expires": 1778394180
+          },
+          {
+            "name": "_gat",
+            "domain": ".replit.com",
+            "expires": 1770618240
+          },
+          {
+            "name": "_ga_MPJY3F1YEL",
+            "domain": ".replit.com",
+            "expires": 1805178181.223044
+          },
+          {
+            "name": "_dd_s",
+            "domain": "replit.com",
+            "expires": 1770619081
+          }
+        ]
+      }
+    },
+    {
+      "step": "verdict",
+      "time": "2026-02-09T06:23:01.992Z",
+      "data": {
+        "result": "NOT_LOGGED_IN: redirected to login page"
+      }
+    }
+  ]
+}
