@@ -1,0 +1,98 @@
+╔═══════════════════════════════════════════════════════════════╗
+║  Replit Agent Exporter v1.0.0                                 ║
+║                                                               ║
+║  This tool exports chat history and checkpoints from          ║
+║  Replit Agent sessions to JSON and CSV files.                 ║
+║                                                               ║
+║  Security: Your password is never stored. Only browser        ║
+║  session cookies are saved locally for convenience.           ║
+║  Delete ./playwright-session.json to clear the session.       ║
+╚═══════════════════════════════════════════════════════════════╝
+
+Launching browser...
+Found existing session, attempting to restore...
+Session restored successfully.
+Already logged in (using saved session).
+
+========================================
+Enter Replit App URLs or Repl IDs
+(one per line, empty line to finish):
+========================================
+
+> https://replit.com/t/quickshoe-llc/repls/DealCRM
+> https://replit.com/t/quickshoe-llc/repls/Replit-Export-Tool
+> 
+
+Processing 2 repl(s)...
+
+
+[1/2] Processing: https://replit.com/t/quickshoe-llc/repls/DealCRM
+
+Scraping: DealCRM
+Already on target URL, skipping navigation: https://replit.com/t/quickshoe-llc/repls/DealCRM
+Waiting for page to settle...
+
+Pre-check: Checking if Replit Agent is currently working...
+  Git check: Top commit: "Saved progress" — likely idle, needs secondary check
+  Running secondary DOM check (5-second observation)...
+  DOM check: No "Working" text and no DOM changes in 5s — agent appears idle
+  Replit Agent is idle. Proceeding with scraping.
+
+========================================
+IMPORTANT: Do NOT use Replit Agent while the scraper is running.
+Agent activity during scraping will cause unreliable results.
+========================================
+
+Step 1: Scrolling to load full chat history...
+Loaded 19 new messages... waiting for new messages...
+Reached time limit for loading history (60s)
+
+  Error processing https://replit.com/t/quickshoe-llc/repls/DealCRM: ReferenceError: containerSelector is not defined
+    at ReplitScraper.scrollToLoadAll (/Users/joshuaallan/Documents/GitHub/Replit_Export/exporter/scraper.ts:2488:8)
+    at async ReplitScraper.scrapeRepl (/Users/joshuaallan/Documents/GitHub/Replit_Export/exporter/scraper.ts:314:5)
+    at async main (/Users/joshuaallan/Documents/GitHub/Replit_Export/exporter/index.ts:138:22)
+
+[2/2] Processing: https://replit.com/t/quickshoe-llc/repls/Replit-Export-Tool
+
+Scraping: Replit-Export-Tool
+Navigating to: https://replit.com/t/quickshoe-llc/repls/Replit-Export-Tool
+Page DOM loaded successfully.
+Waiting for page to settle...
+
+Pre-check: Checking if Replit Agent is currently working...
+  Git check: Top commit: "Add comprehensive documentation for installation and usage" — uncertain, needs secondary check
+  Running secondary DOM check (5-second observation)...
+  DOM check: No "Working" text and no DOM changes in 5s — agent appears idle
+  Replit Agent is idle. Proceeding with scraping.
+
+========================================
+IMPORTANT: Do NOT use Replit Agent while the scraper is running.
+Agent activity during scraping will cause unreliable results.
+========================================
+
+Step 1: Scrolling to load full chat history...
+Load more click 2/2 didn't add messages...messages...
+Reached beginning of chat (no new messages after 2 attempts)
+
+  Error processing https://replit.com/t/quickshoe-llc/repls/Replit-Export-Tool: ReferenceError: containerSelector is not defined
+    at ReplitScraper.scrollToLoadAll (/Users/joshuaallan/Documents/GitHub/Replit_Export/exporter/scraper.ts:2488:8)
+    at async ReplitScraper.scrapeRepl (/Users/joshuaallan/Documents/GitHub/Replit_Export/exporter/scraper.ts:314:5)
+    at async main (/Users/joshuaallan/Documents/GitHub/Replit_Export/exporter/index.ts:138:22)
+
+╔═══════════════════════════════════════════════════════════════╗
+║                      Export Complete!                         ║
+╠═══════════════════════════════════════════════════════════════╣
+║  Processed: 0   repl(s)                                       ║
+║  Output:    ./exports                                         ║
+║  Run:       20260208_17-03                                    ║
+║                                                               ║
+║  Per-URL directory: {ReplName} - 20260208_17-03               ║
+║    {replName}.json         - Full export per repl             ║
+║    all-events.csv          - All events (messages+more)       ║
+║    chat.csv                - Clean chat messages only         ║
+║    chat.md                 - Markdown chat history            ║
+║    work-tracking.csv       - Time, actions, cost breakdown    ║
+║    work-summary.csv        - Daily totals summary             ║
+║                                                               ║
+║  Main directory:                                              ║
+║    20260208_17-03_work-summary.csv - Combined summary         ║
