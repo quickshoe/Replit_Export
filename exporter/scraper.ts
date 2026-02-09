@@ -46,20 +46,43 @@ export class ReplitScraper {
       ],
     };
 
+    this.userDataDir = userDataDir;
+    this.context = await chromium.launchPersistentContext(userDataDir, launchOptions);
+    this.page = this.context.pages()[0] || await this.context.newPage();
+
     if (fs.existsSync(SESSION_FILE)) {
-      console.log('Found existing session, restoring...');
+      console.log('Found existing session, restoring cookies...');
       try {
         const storageState = JSON.parse(fs.readFileSync(SESSION_FILE, 'utf-8'));
-        launchOptions.storageState = storageState;
+
+        if (storageState.cookies && storageState.cookies.length > 0) {
+          await this.context.addCookies(storageState.cookies);
+          console.log(`  Injected ${storageState.cookies.length} cookies into browser context.`);
+        }
+
+        if (storageState.origins && storageState.origins.length > 0) {
+          for (const origin of storageState.origins) {
+            if (origin.localStorage && origin.localStorage.length > 0) {
+              try {
+                await this.page.goto(origin.origin, { waitUntil: 'domcontentloaded', timeout: 10000 });
+                await this.page.evaluate(function(items: Array<{name: string, value: string}>) {
+                  for (var i = 0; i < items.length; i++) {
+                    localStorage.setItem(items[i].name, items[i].value);
+                  }
+                }, origin.localStorage);
+                console.log(`  Restored ${origin.localStorage.length} localStorage items for ${origin.origin}`);
+              } catch {
+                console.log(`  Could not restore localStorage for ${origin.origin}`);
+              }
+            }
+          }
+        }
+
         console.log('Session restored.');
       } catch (err) {
         console.log('Failed to parse session file, starting fresh.');
       }
     }
-
-    this.userDataDir = userDataDir;
-    this.context = await chromium.launchPersistentContext(userDataDir, launchOptions);
-    this.page = this.context.pages()[0] || await this.context.newPage();
   }
 
   async minimizeWindow(): Promise<void> {
