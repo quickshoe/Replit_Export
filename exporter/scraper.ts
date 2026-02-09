@@ -203,28 +203,36 @@ export class ReplitScraper {
   }
 
   async checkLoggedIn(): Promise<boolean> {
-    if (!fs.existsSync(SESSION_FILE)) {
-      console.log('No session file found.');
+    if (!this.context || !this.page) throw new Error('Browser not initialized');
+
+    const cookies = await this.context.cookies('https://replit.com');
+    const hasAuthCookies = cookies.some(c =>
+      c.name.includes('connect.sid') ||
+      c.name.includes('replit') ||
+      c.name.includes('ajs_user_id')
+    );
+
+    if (!hasAuthCookies) {
+      console.log('No auth cookies found in session.');
       return false;
     }
 
     try {
-      const storageState = JSON.parse(fs.readFileSync(SESSION_FILE, 'utf-8'));
-      const cookies = storageState.cookies || [];
-      const hasAuthCookies = cookies.some((c: any) =>
-        c.name.includes('connect.sid') ||
-        c.name.includes('replit_authed') ||
-        c.name.includes('ajs_user_id')
-      );
+      await this.page.goto('https://replit.com/~', {
+        waitUntil: 'domcontentloaded',
+        timeout: 30000
+      });
 
-      if (!hasAuthCookies) {
-        console.log('Session file exists but contains no auth cookies.');
+      await this.page.waitForTimeout(1000);
+
+      const currentUrl = this.page.url();
+
+      if (this.isLoginPage(currentUrl)) {
         return false;
       }
 
       return true;
     } catch {
-      console.log('Failed to read session file.');
       return false;
     }
   }
@@ -279,18 +287,6 @@ export class ReplitScraper {
     }
 
     await this.handleLoginRedirect(page);
-
-    const currentUrl = page.url();
-    if (!currentUrl.includes(replUrl) && !this.isLoginPage(currentUrl)) {
-      console.log('Navigating to repl after login...');
-      try {
-        await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      } catch (err) {
-        console.log('Re-navigation timeout, continuing...');
-      }
-      
-      await this.handleLoginRedirect(page);
-    }
 
     // Wait for the Replit SPA chat content to render before proceeding
     console.log('Waiting for chat panel to render...');
