@@ -692,14 +692,44 @@ export function exportChatMarkdown(exports: ReplExport[], outputDir: string): st
 
     allEvents.sort((a, b) => a.sortIndex - b.sortIndex);
 
-    for (const event of allEvents) {
-      const ts = event.timestamp ? ` — ${event.timestamp}` : '';
-      lines.push(`## ${event.type}${ts}`);
-      lines.push('');
-      lines.push(event.content);
-      lines.push('');
-      lines.push('---');
-      lines.push('');
+    let lastTimestampHeading = '';
+    for (let i = 0; i < allEvents.length; i++) {
+      const event = allEvents[i];
+      const ts = event.timestamp || '';
+      const isChatLine = event.type === 'User' || event.type === 'Agent';
+      const heading = ts ? `## ${ts}` : '';
+
+      if (isChatLine && heading && heading === lastTimestampHeading) {
+        lines.push(`**${event.type}**`);
+        lines.push('');
+        lines.push(event.content);
+        lines.push('');
+        const nextEvent = allEvents[i + 1];
+        const nextIsSameGroup = nextEvent
+          && (nextEvent.type === 'User' || nextEvent.type === 'Agent')
+          && nextEvent.timestamp === event.timestamp;
+        if (!nextIsSameGroup) {
+          lines.push('---');
+          lines.push('');
+        }
+      } else {
+        if (heading) {
+          lines.push(heading);
+          lines.push('');
+        }
+        const label = isChatLine ? `**${event.type}**` : `**${event.type}**`;
+        lines.push(label);
+        lines.push('');
+        lines.push(event.content);
+        lines.push('');
+        lines.push('---');
+        lines.push('');
+        if (isChatLine) {
+          lastTimestampHeading = heading;
+        } else {
+          lastTimestampHeading = '';
+        }
+      }
     }
   }
 

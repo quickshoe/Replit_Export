@@ -668,7 +668,7 @@ export class ReplitScraper {
       return { working: true, debug: 'Found "' + workingText + '" text at bottom of chat — agent is working' };
     }
 
-    // Check 2: 2-second DOM snapshot comparison to detect live typing
+    // Check 2: 3-second DOM snapshot comparison to detect live typing
     var snapshot1 = await page.evaluate(function() {
       var containers = document.querySelectorAll(
         '[class*="eventContainer"], [class*="EventContainer"], [data-event-type], ' +
@@ -682,7 +682,7 @@ export class ReplitScraper {
       return { count: containers.length, lastContent: lastFew.join('|||') };
     });
 
-    await page.waitForTimeout(2000);
+    await page.waitForTimeout(3000);
 
     var snapshot2 = await page.evaluate(function() {
       var containers = document.querySelectorAll(
