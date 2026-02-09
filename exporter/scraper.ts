@@ -42,6 +42,7 @@ export class ReplitScraper {
         '--window-size=1440,900',
         '--no-first-run',
         '--no-default-browser-check',
+        '--disable-features=TLSEarlyData',
       ],
     };
 
@@ -116,6 +117,19 @@ export class ReplitScraper {
         await loginPage.waitForTimeout(2000);
         
         const currentUrl = loginPage.url();
+
+        const pageText = await loginPage.evaluate(function() {
+          return document.body ? document.body.innerText : '';
+        }).catch(function() { return ''; });
+        if (pageText.includes('HTTP ERROR 425') || pageText.includes('ERR_TOO_EARLY')) {
+          console.log('\nHTTP 425 error detected on auth callback. Reloading page...');
+          try {
+            await loginPage.reload({ waitUntil: 'domcontentloaded', timeout: 15000 });
+          } catch {}
+          await loginPage.waitForTimeout(2000);
+          continue;
+        }
+
         const isOnReplit = currentUrl.includes('replit.com');
         const isOnAuthPage = currentUrl.includes('/login') || currentUrl.includes('/signup') || currentUrl.includes('/__/auth');
         const isOnGithub = currentUrl.includes('github.com');
@@ -270,11 +284,15 @@ export class ReplitScraper {
 
     try {
     const currentBrowserUrl = page.url();
-    const normalizeUrl = (u: string) => u.replace(/\/+$/, '').replace(/\?.*$/, '').toLowerCase();
-    const alreadyOnPage = normalizeUrl(currentBrowserUrl).includes(normalizeUrl(fullUrl)) ||
-      normalizeUrl(fullUrl).includes(normalizeUrl(currentBrowserUrl).replace('https://replit.com', ''));
+    const getPath = (u: string) => {
+      try { return new URL(u).pathname.replace(/\/+$/, '').toLowerCase(); }
+      catch { return u.replace(/\/+$/, '').toLowerCase(); }
+    };
+    const targetPath = getPath(fullUrl);
+    const currentPath = getPath(currentBrowserUrl);
+    const alreadyOnPage = targetPath.length > 1 && currentPath === targetPath;
 
-    if (alreadyOnPage && currentBrowserUrl.startsWith('http') && !this.isLoginPage(currentBrowserUrl)) {
+    if (alreadyOnPage && !this.isLoginPage(currentBrowserUrl)) {
       console.log(`Already on target URL, skipping navigation: ${currentBrowserUrl}`);
     } else {
       console.log(`Navigating to: ${fullUrl}`);
