@@ -137,6 +137,13 @@ async function main() {
   if (options.debugLogin) {
     console.log('\n=== Debug Login Mode ===');
     console.log('This will delete your session and trace the full login flow.\n');
+    const sessionPath = './playwright-session.json';
+    if (fs.existsSync(sessionPath)) {
+      fs.unlinkSync(sessionPath);
+      console.log('Deleted session file: ' + sessionPath);
+    } else {
+      console.log('No session file found (already clean).');
+    }
     const scraper = new ReplitScraper();
     try {
       await scraper.init();

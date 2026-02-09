@@ -489,12 +489,9 @@ export class ReplitScraper {
     };
 
     step('session_cleared', {
-      sessionFileExisted: fs.existsSync(SESSION_FILE),
-      action: 'Deleted session file to force fresh login'
+      sessionFileExisted: false,
+      action: 'Session file was already deleted before browser launch'
     });
-    if (fs.existsSync(SESSION_FILE)) {
-      fs.unlinkSync(SESSION_FILE);
-    }
 
     step('navigating_to_login', { url: 'https://replit.com/login' });
     try {
