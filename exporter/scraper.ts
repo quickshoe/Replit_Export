@@ -752,7 +752,7 @@ export class ReplitScraper {
     var checkCount = 0;
 
     while (Date.now() - waitStart < maxWaitMs) {
-      await page.waitForTimeout(10000);
+      await page.waitForTimeout(3000);
       checkCount++;
 
       var elapsedSec = Math.round((Date.now() - waitStart) / 1000);
