@@ -2474,18 +2474,12 @@ export class ReplitScraper {
     }
     console.log('');
     
-    await page.evaluate(function(selector) {
-      if (selector) {
-        var container = document.querySelector(selector);
-        if (container) {
-          container.scrollTop = container.scrollHeight;
-        }
-      }
+    await page.evaluate(function() {
       var scrollAreas = document.querySelectorAll('[class*="ScrollArea"], [class*="scroll"], [role="log"]');
       for (var j = 0; j < scrollAreas.length; j++) {
         scrollAreas[j].scrollTop = scrollAreas[j].scrollHeight;
       }
-    }, containerSelector);
+    });
     
     await page.waitForTimeout(500);
   }
