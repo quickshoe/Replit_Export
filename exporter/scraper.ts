@@ -356,6 +356,14 @@ export class ReplitScraper {
         cp.durationSeconds = calculateDuration(cp.timestamp, messages);
       }
     } else {
+      // Standard mode: expand collapsed message sections so agent messages are visible
+      console.log('Step 1b: Expanding collapsed message sections...');
+      var expandedCount = await this.expandTargetedSections(page);
+      if (expandedCount > 0) {
+        console.log(`  Expanded ${expandedCount} collapsed sections`);
+        await page.waitForTimeout(1500);
+      }
+
       // Standard mode: open Git tab briefly just to click one relative timestamp,
       // which converts ALL timestamps across the UI to absolute format.
       console.log('Step 2: Converting timestamps to absolute format...');
@@ -660,7 +668,7 @@ export class ReplitScraper {
       return { working: true, debug: 'Found "' + workingText + '" text at bottom of chat — agent is working' };
     }
 
-    // Check 2: 5-second DOM snapshot comparison to detect live typing
+    // Check 2: 2-second DOM snapshot comparison to detect live typing
     var snapshot1 = await page.evaluate(function() {
       var containers = document.querySelectorAll(
         '[class*="eventContainer"], [class*="EventContainer"], [data-event-type], ' +
@@ -674,7 +682,7 @@ export class ReplitScraper {
       return { count: containers.length, lastContent: lastFew.join('|||') };
     });
 
-    await page.waitForTimeout(5000);
+    await page.waitForTimeout(2000);
 
     var snapshot2 = await page.evaluate(function() {
       var containers = document.querySelectorAll(
@@ -690,10 +698,10 @@ export class ReplitScraper {
     });
 
     if (snapshot2.count !== snapshot1.count || snapshot2.lastContent !== snapshot1.lastContent) {
-      return { working: true, debug: 'Chat DOM changed during 5s observation (' + snapshot1.count + ' -> ' + snapshot2.count + ' containers) — agent is working' };
+      return { working: true, debug: 'Chat DOM changed during 2s observation (' + snapshot1.count + ' -> ' + snapshot2.count + ' containers) — agent is working' };
     }
 
-    return { working: false, debug: 'No "Working" text and no DOM changes in 5s — agent appears idle' };
+    return { working: false, debug: 'No "Working" text and no DOM changes in 2s — agent appears idle' };
   }
 
   private async waitForAgentIdle(page: Page): Promise<void> {
@@ -730,24 +738,8 @@ export class ReplitScraper {
       return;
     }
 
-    // Primary check: Git tab commit description
-    var gitResult = await this.checkAgentWorkingViaGit(page);
-    console.log('  Git check: ' + gitResult.debug);
-
-    if (gitResult.working) {
-      // Agent is definitely working (top commit = "Transitioned from Plan to Build")
-      await this.waitForAgentToFinish(page);
-      return;
-    }
-
-    // If git check was inconclusive or showed "Saved progress", do secondary DOM check
-    if (gitResult.checked) {
-      console.log('  Running secondary DOM check (5-second observation)...');
-    } else {
-      console.log('  Git check inconclusive. Running DOM-based detection...');
-    }
-
-    // Navigate back to chat for DOM check
+    // DOM-based detection: check for "Working" text + 2-second snapshot comparison
+    console.log('  Running DOM check (2-second observation)...');
     var domResult = await this.checkAgentWorkingViaDom(page);
     console.log('  DOM check: ' + domResult.debug);
 
@@ -780,26 +772,19 @@ export class ReplitScraper {
 
       var elapsedSec = Math.round((Date.now() - waitStart) / 1000);
 
-      // Re-check via git first (fast check for "Saved progress")
-      var gitPoll = await this.checkAgentWorkingViaGit(page);
-      if (gitPoll.checked && !gitPoll.working) {
-        console.log(`  Re-check #${checkCount} (${elapsedSec}s): Git says idle — confirming with DOM check...`);
-        // Git says likely idle — confirm with DOM check
-        var domPoll = await this.checkAgentWorkingViaDom(page);
-        if (!domPoll.working) {
-          console.log(`  DOM confirms idle. Agent finished working. (Waited ${elapsedSec}s)`);
-          console.log('  Proceeding with scraping.\n');
-          console.log('========================================');
-          console.log('IMPORTANT: Do NOT use Replit Agent while the scraper is running.');
-          console.log('Agent activity during scraping will cause unreliable results.');
-          console.log('========================================\n');
-          await page.waitForTimeout(3000);
-          return;
-        } else {
-          console.log(`  Re-check #${checkCount} (${elapsedSec}s): DOM still changing — agent still working`);
-        }
+      var domPoll = await this.checkAgentWorkingViaDom(page);
+      if (!domPoll.working) {
+        console.log(`  Re-check #${checkCount} (${elapsedSec}s): ${domPoll.debug}`);
+        console.log(`  Agent finished working. (Waited ${elapsedSec}s)`);
+        console.log('  Proceeding with scraping.\n');
+        console.log('========================================');
+        console.log('IMPORTANT: Do NOT use Replit Agent while the scraper is running.');
+        console.log('Agent activity during scraping will cause unreliable results.');
+        console.log('========================================\n');
+        await page.waitForTimeout(3000);
+        return;
       } else {
-        console.log(`  Re-check #${checkCount} (${elapsedSec}s): ${gitPoll.debug} — still working`);
+        console.log(`  Re-check #${checkCount} (${elapsedSec}s): ${domPoll.debug} — agent still working`);
       }
     }
 
@@ -1705,23 +1690,24 @@ export class ReplitScraper {
       return;
     }
 
-    console.log('  Git panel opened, clicking Commits sub-tab...');
-    await page.evaluate(function() {
-      var buttons = document.querySelectorAll('button, [role="tab"], a');
-      for (var i = 0; i < buttons.length; i++) {
-        var text = (buttons[i].textContent || '').trim().toLowerCase();
-        if (text === 'commits' || text === 'commit history') {
-          buttons[i].click();
-          break;
-        }
-      }
-    });
-    await page.waitForTimeout(1000);
+    console.log('  Git panel opened, looking for relative timestamps...');
 
     var clickedRelativeTs = await this.clickOneRelativeTimestamp(page);
     if (clickedRelativeTs) {
-      console.log('  Successfully converted all timestamps to absolute format');
-      await page.waitForTimeout(500);
+      var converted = false;
+      for (var pollAttempt = 0; pollAttempt < 5; pollAttempt++) {
+        await page.waitForTimeout(100);
+        var stillRelative = await this.hasRelativeTimestamps(page);
+        if (!stillRelative) {
+          converted = true;
+          break;
+        }
+      }
+      if (converted) {
+        console.log('  Successfully converted all timestamps to absolute format');
+      } else {
+        console.log('  Clicked timestamp but conversion may still be in progress');
+      }
     } else {
       console.log('  No relative timestamps found (may already be absolute)');
     }
@@ -1814,113 +1800,33 @@ export class ReplitScraper {
       return false;
     }
 
-    console.log(`  Click executed (${clicked}). Waiting for conversion...`);
-    await page.waitForTimeout(1500);
+    console.log(`  Click executed (${clicked}).`);
+    return true;
+  }
 
-    // Verify: re-check timestamps in the git panel
-    var verified = await page.evaluate(function() {
-      var absoluteTimePattern = /\d{1,2}:\d{2}\s*(?:am|pm)/i;
-      var absoluteDatePattern = /(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d{1,2},?\s+\d{4}/i;
-      var absoluteNumericDatePattern = /\d{1,2}\/\d{1,2}\/\d{2,4}/;
+  private async hasRelativeTimestamps(page: Page): Promise<boolean> {
+    return page.evaluate(function() {
       var relativePattern = /^\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago$/i;
-
+      var justNowPattern = /^just\s+now$/i;
       var panels = document.querySelectorAll('[role="tabpanel"]');
-      var gitPanel = null;
       for (var p = 0; p < panels.length; p++) {
         var style = window.getComputedStyle(panels[p]);
         if (style.opacity === '0' || style.display === 'none') continue;
         var pText = (panels[p].textContent || '').substring(0, 2000);
         if (pText.indexOf('Sync Changes') >= 0 || pText.indexOf('Remote Updates') >= 0) {
-          gitPanel = panels[p];
-          break;
-        }
-      }
-      if (!gitPanel) return { converted: false, text: '' };
-
-      var allEls = gitPanel.querySelectorAll('*');
-      for (var i = 0; i < allEls.length; i++) {
-        var el = allEls[i];
-        if (el.children.length > 0) continue;
-        var txt = (el.textContent || '').trim();
-        if (txt.length < 3 || txt.length > 80) continue;
-        if (txt.indexOf('last fetched') >= 0) continue;
-        if (absoluteTimePattern.test(txt) || absoluteDatePattern.test(txt) || absoluteNumericDatePattern.test(txt)) {
-          return { converted: true, text: txt };
-        }
-        if (relativePattern.test(txt)) {
-          return { converted: false, text: txt };
-        }
-      }
-      return { converted: false, text: '' };
-    });
-
-    if (verified.converted) {
-      console.log(`  Conversion verified: "${verified.text}"`);
-      return true;
-    }
-
-    // Retry: try clicking the parent of the timestamp element
-    console.log(`  Conversion not confirmed ("${verified.text}"). Retrying with parent click...`);
-    var retryClicked = await page.evaluate(function(targetElIndex) {
-      var panels = document.querySelectorAll('[role="tabpanel"]');
-      var gitPanel = null;
-      for (var p = 0; p < panels.length; p++) {
-        var style = window.getComputedStyle(panels[p]);
-        if (style.opacity === '0' || style.display === 'none') continue;
-        var pText = (panels[p].textContent || '').substring(0, 2000);
-        if (pText.indexOf('Sync Changes') >= 0 || pText.indexOf('Remote Updates') >= 0) {
-          gitPanel = panels[p];
-          break;
-        }
-      }
-      if (!gitPanel) return false;
-
-      var allEls = gitPanel.querySelectorAll('*');
-      if (targetElIndex >= 0 && targetElIndex < allEls.length) {
-        var el = allEls[targetElIndex];
-        if (el.parentElement) {
-          el.parentElement.scrollIntoView({ block: 'center', behavior: 'instant' });
-          el.parentElement.click();
-          return true;
+          var allEls = panels[p].querySelectorAll('*');
+          for (var i = 0; i < allEls.length; i++) {
+            var el = allEls[i];
+            if (el.children.length > 0) continue;
+            var txt = (el.textContent || '').trim();
+            if (txt.length < 3 || txt.length > 80) continue;
+            if (txt.indexOf('last fetched') >= 0) continue;
+            if (relativePattern.test(txt) || justNowPattern.test(txt)) return true;
+          }
         }
       }
       return false;
-    }, detection.elIndex);
-
-    if (retryClicked) {
-      await page.waitForTimeout(1500);
-
-      var finalCheck = await page.evaluate(function() {
-        var absoluteTimePattern = /\d{1,2}:\d{2}\s*(?:am|pm)/i;
-        var absoluteDatePattern = /(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d{1,2},?\s+\d{4}/i;
-
-        var panels = document.querySelectorAll('[role="tabpanel"]');
-        for (var p = 0; p < panels.length; p++) {
-          var style = window.getComputedStyle(panels[p]);
-          if (style.opacity === '0' || style.display === 'none') continue;
-          var pText = (panels[p].textContent || '').substring(0, 2000);
-          if (pText.indexOf('Sync Changes') >= 0 || pText.indexOf('Remote Updates') >= 0) {
-            var allEls = panels[p].querySelectorAll('*');
-            for (var i = 0; i < allEls.length; i++) {
-              var el = allEls[i];
-              if (el.children.length > 0) continue;
-              var txt = (el.textContent || '').trim();
-              if (txt.indexOf('last fetched') >= 0) continue;
-              if (absoluteTimePattern.test(txt) || absoluteDatePattern.test(txt)) return true;
-            }
-          }
-        }
-        return false;
-      });
-
-      if (finalCheck) {
-        console.log('  Conversion verified on retry.');
-        return true;
-      }
-    }
-
-    console.log('  WARNING: Could not verify timestamp conversion. Proceeding anyway.');
-    return false;
+    });
   }
 
   private async navigateToChatPanel(page: Page, replUrl: string): Promise<void> {
@@ -2615,8 +2521,6 @@ export class ReplitScraper {
         }
       });
 
-      await page.waitForTimeout(300);
-
       const clickedLoadMore = await this.clickLoadMoreButton(page);
       if (clickedLoadMore) {
         process.stdout.write(`\rClicked load more button, waiting for new messages...`);
@@ -2626,9 +2530,8 @@ export class ReplitScraper {
         let newCount = currentCount;
         
         while (loadWaitAttempts < maxLoadWaitAttempts) {
-          await page.waitForTimeout(loadWaitAttempts === 0 ? 500 : 300);
+          await page.waitForTimeout(200);
           newCount = await this.countMessageElements(page);
-          
           if (newCount > currentCount) {
             process.stdout.write(`\rLoaded ${newCount - currentCount} new messages...`);
             loadMoreFailedClicks = 0;
@@ -2643,24 +2546,11 @@ export class ReplitScraper {
             console.log(`\nReached beginning of chat (load more button disappeared)`);
             break;
           }
-          const extendedWait = loadMoreFailedClicks === 0 ? 1000 : 2000;
-          await page.waitForTimeout(extendedWait);
-          newCount = await this.countMessageElements(page);
-          if (newCount > currentCount) {
-            process.stdout.write(`\rLoaded ${newCount - currentCount} new messages after extended wait...`);
-            loadMoreFailedClicks = 0;
-          } else {
-            const stillVisible = await this.isLoadMoreButtonVisible(page);
-            if (!stillVisible) {
-              console.log(`\nReached beginning of chat (load more button disappeared after wait)`);
-              break;
-            }
-            loadMoreFailedClicks++;
-            process.stdout.write(`\rLoad more click ${loadMoreFailedClicks}/${maxLoadMoreFailures} didn't add messages...`);
-            if (loadMoreFailedClicks >= maxLoadMoreFailures) {
-              console.log(`\nReached beginning of chat (no new messages after ${maxLoadMoreFailures} attempts)`);
-              break;
-            }
+          loadMoreFailedClicks++;
+          process.stdout.write(`\rLoad more click ${loadMoreFailedClicks}/${maxLoadMoreFailures} didn't add messages...`);
+          if (loadMoreFailedClicks >= maxLoadMoreFailures) {
+            console.log(`\nReached beginning of chat (no new messages after ${maxLoadMoreFailures} attempts)`);
+            break;
           }
         }
         
@@ -2668,8 +2558,6 @@ export class ReplitScraper {
         previousCount = newCount;
         continue;
       }
-
-      await page.waitForTimeout(150);
 
       if (currentCount === previousCount) {
         sameCountIterations++;
