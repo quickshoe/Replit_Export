@@ -139,9 +139,14 @@ npx tsx exporter/index.ts -o ./my-exports
 # Clear saved session (log out)
 npx tsx exporter/index.ts --clear-session
 
+# Debug session restore (trace what happens step-by-step)
+npx tsx exporter/index.ts --debug-session
+
 # Show help
 npx tsx exporter/index.ts --help
 ```
+
+> **Important:** Use `npx tsx` (not `npx ts-node`) to run the exporter. The project uses ES modules which `ts-node` does not handle correctly.
 
 | Flag | Short | Description |
 |------|-------|-------------|
@@ -152,6 +157,7 @@ npx tsx exporter/index.ts --help
 | `--cutoff <date>` | `-c` | Only include data from this date onward (e.g. `2025-01-15` or `Jan 15, 2025`) |
 | `--output <dir>` | `-o` | Output directory (default: `./exports`) |
 | `--clear-session` | | Delete saved session cookies and exit |
+| `--debug-session` | | Trace session restore step-by-step, dump diagnostics to `debug-session.json` |
 | `--help` | `-h` | Show help |
 
 ## Output Structure
