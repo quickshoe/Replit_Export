@@ -320,11 +320,19 @@ export class ReplitScraper {
       await page.waitForTimeout(1500);
     }
 
+    // === STEP 1c: Find oldest visible chat timestamp to limit Git commit scrolling ===
+    var oldestChatTimestamp = await this.findOldestChatTimestamp(page);
+    if (oldestChatTimestamp) {
+      console.log(`  Oldest chat timestamp found: ${oldestChatTimestamp}`);
+    } else {
+      console.log('  Could not determine oldest chat timestamp — will load all Git commits');
+    }
+
     // === STEP 2: Navigate to Git tab, click one relative timestamp, scrape commits ===
     // The one-click timestamp conversion in the Git tab converts ALL relative timestamps
     // across the entire UI to absolute. This is critical for accurate timestamp extraction.
     try {
-      gitCommits = await this.scrapeGitCommits(page);
+      gitCommits = await this.scrapeGitCommits(page, oldestChatTimestamp);
     } catch (err) {
       console.log('  WARNING: Could not scrape Git commits:', (err as Error).message);
       console.log('  Timestamps may remain relative. Extraction will continue but some timestamps may be missing.');
@@ -741,19 +749,22 @@ export class ReplitScraper {
 
     var waitStart = Date.now();
     var maxWaitMs = 600000; // 10 minute max wait
-    var lastLogTime = Date.now();
+    var checkCount = 0;
 
     while (Date.now() - waitStart < maxWaitMs) {
       await page.waitForTimeout(10000);
+      checkCount++;
+
+      var elapsedSec = Math.round((Date.now() - waitStart) / 1000);
 
       // Re-check via git first (fast check for "Saved progress")
       var gitPoll = await this.checkAgentWorkingViaGit(page);
       if (gitPoll.checked && !gitPoll.working) {
+        console.log(`  Re-check #${checkCount} (${elapsedSec}s): Git says idle — confirming with DOM check...`);
         // Git says likely idle — confirm with DOM check
         var domPoll = await this.checkAgentWorkingViaDom(page);
         if (!domPoll.working) {
-          var elapsedSec = Math.round((Date.now() - waitStart) / 1000);
-          console.log(`\n  Replit Agent finished working. (Waited ${elapsedSec}s)`);
+          console.log(`  DOM confirms idle. Agent finished working. (Waited ${elapsedSec}s)`);
           console.log('  Proceeding with scraping.\n');
           console.log('========================================');
           console.log('IMPORTANT: Do NOT use Replit Agent while the scraper is running.');
@@ -761,14 +772,11 @@ export class ReplitScraper {
           console.log('========================================\n');
           await page.waitForTimeout(3000);
           return;
+        } else {
+          console.log(`  Re-check #${checkCount} (${elapsedSec}s): DOM still changing — agent still working`);
         }
-      }
-
-      // Log progress every 15 seconds
-      if (Date.now() - lastLogTime >= 15000) {
-        var elapsed = Math.round((Date.now() - waitStart) / 1000);
-        process.stdout.write(`\r  Still waiting for agent to finish... (${elapsed}s elapsed)`);
-        lastLogTime = Date.now();
+      } else {
+        console.log(`  Re-check #${checkCount} (${elapsedSec}s): ${gitPoll.debug} — still working`);
       }
     }
 
@@ -776,7 +784,7 @@ export class ReplitScraper {
     console.log('  Proceeding anyway — results may be incomplete or unreliable.\n');
   }
 
-  async scrapeGitCommits(page: Page): Promise<GitCommit[]> {
+  async scrapeGitCommits(page: Page, oldestChatTimestamp?: string | null): Promise<GitCommit[]> {
     console.log('\nStep 2: Scraping Git tab for commit history...');
 
     var gitPanelOpen = false;
@@ -1011,11 +1019,17 @@ export class ReplitScraper {
       await page.waitForTimeout(2000);
     }
 
-    // Scroll to load all commits
+    // Scroll to load commits (limited by oldest chat timestamp if available)
     var scrollAttempts = 0;
     var maxScrollAttempts = 30;
     var lastCommitCount = 0;
     var stableRounds = 0;
+    var cutoffDate = oldestChatTimestamp ? new Date(oldestChatTimestamp) : null;
+    if (cutoffDate) {
+      // Add 1-day buffer before oldest chat timestamp
+      cutoffDate = new Date(cutoffDate.getTime() - 86400000);
+      console.log(`  Limiting Git scroll to commits after: ${cutoffDate.toISOString().split('T')[0]}`);
+    }
 
     while (scrollAttempts < maxScrollAttempts) {
       var currentCount = await page.evaluate(function() {
@@ -1063,6 +1077,73 @@ export class ReplitScraper {
       } else {
         stableRounds = 0;
         lastCommitCount = currentCount;
+      }
+
+      // Check if oldest visible commit is already older than the chat cutoff
+      if (cutoffDate) {
+        var oldestCommitTs = await page.evaluate(function() {
+          var timePattern = /(\d+)\s*(second|minute|hour|day|week|month|year)s?\s*ago/i;
+          var absDatePattern = /(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+(\d{1,2})(?:,?\s*(\d{4}))?/i;
+
+          var panels = document.querySelectorAll('[role="tabpanel"]');
+          var gitPanel = null;
+          for (var p = 0; p < panels.length; p++) {
+            var style = window.getComputedStyle(panels[p]);
+            if (style.opacity === '0' || style.display === 'none') continue;
+            var pText = (panels[p].textContent || '').substring(0, 2000);
+            if (pText.indexOf('Sync Changes') >= 0 || pText.indexOf('Remote Updates') >= 0) {
+              gitPanel = panels[p];
+              break;
+            }
+          }
+          if (!gitPanel) return null;
+
+          var timestamps = [];
+          var allEls = gitPanel.querySelectorAll('*');
+          for (var i = 0; i < allEls.length; i++) {
+            var el = allEls[i];
+            if (el.children.length > 0) continue;
+            var txt = (el.textContent || '').trim();
+            if (txt.length < 3 || txt.length > 80) continue;
+            if (txt.indexOf('last fetched') >= 0) continue;
+
+            var relMatch = txt.match(timePattern);
+            if (relMatch) {
+              var amount = parseInt(relMatch[1], 10);
+              var unit = relMatch[2].toLowerCase();
+              var ms = 0;
+              if (unit === 'second') ms = amount * 1000;
+              else if (unit === 'minute') ms = amount * 60000;
+              else if (unit === 'hour') ms = amount * 3600000;
+              else if (unit === 'day') ms = amount * 86400000;
+              else if (unit === 'week') ms = amount * 604800000;
+              else if (unit === 'month') ms = amount * 2592000000;
+              else if (unit === 'year') ms = amount * 31536000000;
+              timestamps.push(Date.now() - ms);
+              continue;
+            }
+
+            var absMatch = txt.match(absDatePattern);
+            if (absMatch) {
+              var monthMap = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+              var mon = monthMap[absMatch[1].substring(0, 3).toLowerCase()];
+              var day = parseInt(absMatch[2], 10);
+              var year = absMatch[3] ? parseInt(absMatch[3], 10) : new Date().getFullYear();
+              timestamps.push(new Date(year, mon, day).getTime());
+            }
+          }
+
+          if (timestamps.length === 0) return null;
+          return Math.min.apply(null, timestamps);
+        });
+
+        if (oldestCommitTs) {
+          var oldestCommitDate = new Date(oldestCommitTs);
+          if (oldestCommitDate < cutoffDate) {
+            console.log(`  Git commits reach ${oldestCommitDate.toISOString().split('T')[0]} (before chat cutoff) — stopping scroll`);
+            break;
+          }
+        }
       }
 
       await page.evaluate(function() {
@@ -2384,14 +2465,14 @@ export class ReplitScraper {
     let previousCount = 0;
     let sameCountIterations = 0;
     let loadMoreFailedClicks = 0;
-    const maxIterations = 100;
-    const maxLoadMoreFailures = 2;
+    const maxIterations = 500;
+    const maxLoadMoreFailures = 5;
     const startTime = Date.now();
-    const maxTime = 60000;
+    const maxTime = 300000;
     
     for (let i = 0; i < maxIterations; i++) {
       if (Date.now() - startTime > maxTime) {
-        console.log(`\nReached time limit for loading history (60s)`);
+        console.log(`\nReached time limit for loading history (5 min)`);
         break;
       }
       const currentCount = await this.countMessageElements(page);
@@ -2410,11 +2491,11 @@ export class ReplitScraper {
         process.stdout.write(`\rClicked load more button, waiting for new messages...`);
         
         let loadWaitAttempts = 0;
-        const maxLoadWaitAttempts = 3;
+        const maxLoadWaitAttempts = 5;
         let newCount = currentCount;
         
         while (loadWaitAttempts < maxLoadWaitAttempts) {
-          await page.waitForTimeout(500);
+          await page.waitForTimeout(loadWaitAttempts === 0 ? 500 : 300);
           newCount = await this.countMessageElements(page);
           
           if (newCount > currentCount) {
@@ -2431,7 +2512,7 @@ export class ReplitScraper {
             console.log(`\nReached beginning of chat (load more button disappeared)`);
             break;
           }
-          const extendedWait = loadMoreFailedClicks === 0 ? 2000 : 4000;
+          const extendedWait = loadMoreFailedClicks === 0 ? 1000 : 2000;
           await page.waitForTimeout(extendedWait);
           newCount = await this.countMessageElements(page);
           if (newCount > currentCount) {
@@ -2482,6 +2563,99 @@ export class ReplitScraper {
     });
     
     await page.waitForTimeout(500);
+  }
+
+  private async findOldestChatTimestamp(page: Page): Promise<string | null> {
+    try {
+      var result = await page.evaluate(function() {
+        var timePattern = /\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago/i;
+        var absDatePattern = /(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d{1,2}/i;
+        var absTimePattern = /\d{1,2}:\d{2}\s*(?:am|pm)/i;
+        var fullDatePattern = /\d{1,2}\/\d{1,2}\/\d{2,4}/;
+
+        // Find chat-specific containers to limit search scope
+        var chatSelectors = [
+          '[class*="eventContainer"]', '[class*="EventContainer"]',
+          '[class*="ChatMessage"]', '[class*="chat-message"]',
+          '[class*="UserMessage"]', '[class*="AgentMessage"]',
+          '[class*="AssistantMessage"]', '[class*="EndOfRunSummary"]',
+          '[data-event-type]', '[class*="checkpoint"]'
+        ];
+        var chatContainers = document.querySelectorAll(chatSelectors.join(', '));
+
+        var timestamps = [];
+        for (var c = 0; c < chatContainers.length; c++) {
+          var container = chatContainers[c];
+          var leafEls = container.querySelectorAll('*');
+          for (var i = 0; i < leafEls.length; i++) {
+            var el = leafEls[i];
+            if (el.children.length > 0) continue;
+            var txt = (el.textContent || '').trim();
+            if (txt.length < 3 || txt.length > 100) continue;
+
+            if (timePattern.test(txt) || absDatePattern.test(txt) || absTimePattern.test(txt) || fullDatePattern.test(txt)) {
+              var rect = el.getBoundingClientRect();
+              if (rect.width > 0 && rect.height > 0) {
+                timestamps.push({ text: txt, top: rect.top });
+              }
+            }
+          }
+        }
+
+        if (timestamps.length === 0) return null;
+
+        timestamps.sort(function(a, b) { return a.top - b.top; });
+        return timestamps[0].text;
+      });
+
+      if (!result) return null;
+
+      var parsed = this.parseRelativeOrAbsoluteTimestamp(result);
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  private parseRelativeOrAbsoluteTimestamp(text: string): string | null {
+    var relMatch = text.match(/(\d+)\s*(second|minute|hour|day|week|month|year)s?\s*ago/i);
+    if (relMatch) {
+      var amount = parseInt(relMatch[1], 10);
+      var unit = relMatch[2].toLowerCase();
+      var now = new Date();
+      var ms = 0;
+      if (unit === 'second') ms = amount * 1000;
+      else if (unit === 'minute') ms = amount * 60000;
+      else if (unit === 'hour') ms = amount * 3600000;
+      else if (unit === 'day') ms = amount * 86400000;
+      else if (unit === 'week') ms = amount * 604800000;
+      else if (unit === 'month') ms = amount * 2592000000;
+      else if (unit === 'year') ms = amount * 31536000000;
+      var pastDate = new Date(now.getTime() - ms);
+      return pastDate.toISOString();
+    }
+
+    var absMatch = text.match(/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+(\d{1,2})(?:,?\s*(\d{4}))?/i);
+    if (absMatch) {
+      var months: { [key: string]: number } = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+      var mon = months[absMatch[1].substring(0, 3).toLowerCase()];
+      var day = parseInt(absMatch[2], 10);
+      var year = absMatch[3] ? parseInt(absMatch[3], 10) : new Date().getFullYear();
+      var d = new Date(year, mon, day);
+      return d.toISOString();
+    }
+
+    var slashMatch = text.match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+    if (slashMatch) {
+      var m = parseInt(slashMatch[1], 10) - 1;
+      var dy = parseInt(slashMatch[2], 10);
+      var yr = parseInt(slashMatch[3], 10);
+      if (yr < 100) yr += 2000;
+      var dt = new Date(yr, m, dy);
+      return dt.toISOString();
+    }
+
+    return null;
   }
 
   private async clickLoadMoreButton(page: Page): Promise<boolean> {
