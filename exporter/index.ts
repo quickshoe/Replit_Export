@@ -51,6 +51,7 @@ async function main() {
     .option('-u, --urls <urls...>', 'Replit URLs or IDs to export (space-separated)')
     .option('--clear-session', 'Delete saved session and exit', false)
     .option('-v, --verbose', 'Show detailed per-item logs (hover, precision merge)', false)
+    .option('-f, --full', 'Full extraction: git commits, work tracking, checkpoints, hover durations', false)
     .option('-o, --output <dir>', 'Output directory', OUTPUT_DIR);
 
   program.parse();
@@ -88,6 +89,7 @@ async function main() {
 
   const scraper = new ReplitScraper();
   const isVerbose = options.verbose;
+  const isFullMode = options.full;
   if (isVerbose) {
     scraper.setVerbose(true);
   }
@@ -109,6 +111,7 @@ async function main() {
     if (isVerbose) {
       console.log('Verbose mode: detailed per-item logging enabled.');
     }
+    console.log(`Mode: ${isFullMode ? 'Full extraction (git, work tracking, checkpoints)' : 'Standard (chat messages only)'}`);
 
     let urls: string[] = options.urls || [];
     if (urls.length === 0) {
@@ -135,7 +138,7 @@ async function main() {
       console.log(`\n[${i + 1}/${urls.length}] Processing: ${url}`);
       
       try {
-        const data = await scraper.scrapeRepl(url, outputDir);
+        const data = await scraper.scrapeRepl(url, outputDir, isFullMode);
         exports.push(data);
 
         const replName = extractReplName(url);
@@ -148,27 +151,29 @@ async function main() {
 
         const singleExport = [data];
 
-        const allEventsPath = exportAllEventsCsv(singleExport, replOutputDir);
-        console.log(`  All events CSV: ${allEventsPath}`);
-
         const chatPath = exportChatCsv(singleExport, replOutputDir);
         console.log(`  Chat CSV: ${chatPath}`);
 
         const chatMdPath = exportChatMarkdown(singleExport, replOutputDir);
         console.log(`  Chat Markdown: ${chatMdPath}`);
 
-        const workTrackingPath = exportWorkTrackingCsv(singleExport, replOutputDir);
-        console.log(`  Work tracking CSV: ${workTrackingPath}`);
+        if (isFullMode) {
+          const allEventsPath = exportAllEventsCsv(singleExport, replOutputDir);
+          console.log(`  All events CSV: ${allEventsPath}`);
 
-        const workSummaryPath = exportWorkSummaryCsv(singleExport, replOutputDir);
-        console.log(`  Work summary CSV: ${workSummaryPath}`);
+          const workTrackingPath = exportWorkTrackingCsv(singleExport, replOutputDir);
+          console.log(`  Work tracking CSV: ${workTrackingPath}`);
+
+          const workSummaryPath = exportWorkSummaryCsv(singleExport, replOutputDir);
+          console.log(`  Work summary CSV: ${workSummaryPath}`);
+        }
 
       } catch (err) {
         console.error(`  Error processing ${url}:`, err);
       }
     }
 
-    if (exports.length > 0) {
+    if (isFullMode && exports.length > 0) {
       const combinedPath = exportCombinedWorkSummaryCsv(exports, outputDir, runTimestamp);
       console.log(`\nCombined work summary saved: ${combinedPath}`);
     }
@@ -176,9 +181,11 @@ async function main() {
     const w = 63;
     const pad = (s: string) => '║' + s.padEnd(w) + '║';
     const border = '═'.repeat(w);
-    console.log(`
+
+    if (isFullMode) {
+      console.log(`
 ╔${border}╗
-${pad('                      Export Complete!                      ')}
+${pad('                  Export Complete! (--full)                  ')}
 ╠${border}╣
 ${pad('  Processed: ' + String(exports.length).padEnd(3) + ' repl(s)')}
 ${pad('  Output:    ' + outputDir)}
@@ -196,6 +203,25 @@ ${pad('  Main directory:')}
 ${pad('    ' + runTimestamp + '_work-summary.csv - Combined summary')}
 ╚${border}╝
 `);
+    } else {
+      console.log(`
+╔${border}╗
+${pad('                      Export Complete!                      ')}
+╠${border}╣
+${pad('  Processed: ' + String(exports.length).padEnd(3) + ' repl(s)')}
+${pad('  Output:    ' + outputDir)}
+${pad('  Run:       ' + runTimestamp)}
+${pad('')}
+${pad('  Per-URL directory: {ReplName} - ' + runTimestamp)}
+${pad('    {replName}.json         - Full export per repl')}
+${pad('    chat.csv                - Chat messages only')}
+${pad('    chat.md                 - Markdown chat history')}
+${pad('')}
+${pad('  Tip: Use --full for complete extraction with')}
+${pad('  git commits, work tracking, and checkpoints.')}
+╚${border}╝
+`);
+    }
 
   } catch (err) {
     console.error('Error:', err);

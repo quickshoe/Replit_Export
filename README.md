@@ -130,6 +130,9 @@ npx tsx exporter/index.ts --dry-run
 # Verbose mode -- show detailed per-item logs
 npx tsx exporter/index.ts --verbose
 
+# Full extraction -- include git commits, work tracking, checkpoints
+npx tsx exporter/index.ts --full
+
 # Custom output directory
 npx tsx exporter/index.ts -o ./my-exports
 
@@ -145,6 +148,7 @@ npx tsx exporter/index.ts --help
 | `--urls <urls...>` | `-u` | Replit URLs or IDs to export (space-separated) |
 | `--dry-run` | `-d` | Only export the first URL (for testing) |
 | `--verbose` | `-v` | Show detailed per-item logging |
+| `--full` | `-f` | Full extraction: git commits, work tracking, checkpoints |
 | `--output <dir>` | `-o` | Output directory (default: `./exports`) |
 | `--clear-session` | | Delete saved session cookies and exit |
 | `--help` | `-h` | Show help |

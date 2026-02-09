@@ -254,7 +254,7 @@ export class ReplitScraper {
     }
   }
 
-  async scrapeRepl(replUrl: string, outputDir: string = './exports'): Promise<ReplExport> {
+  async scrapeRepl(replUrl: string, outputDir: string = './exports', fullMode: boolean = true): Promise<ReplExport> {
     if (!this.context || !this.page) throw new Error('Browser not initialized');
 
     const replName = extractReplName(replUrl);
@@ -313,95 +313,104 @@ export class ReplitScraper {
     console.log('Step 1: Scrolling to load full chat history...');
     await this.scrollToLoadAll(page);
 
-    console.log('Step 1b: Expanding targeted sections (messages & actions, checkpoints, worked for)...');
-    var expandedCount = await this.expandTargetedSections(page);
-    console.log(`  Expanded ${expandedCount} collapsed sections`);
-    if (expandedCount > 0) {
-      await page.waitForTimeout(1500);
-    }
+    if (fullMode) {
+      console.log('Step 1b: Expanding targeted sections (messages & actions, checkpoints, worked for)...');
+      var expandedCount = await this.expandTargetedSections(page);
+      console.log(`  Expanded ${expandedCount} collapsed sections`);
+      if (expandedCount > 0) {
+        await page.waitForTimeout(1500);
+      }
 
-    // === STEP 1c: Find oldest visible chat timestamp to limit Git commit scrolling ===
-    var oldestChatTimestamp = await this.findOldestChatTimestamp(page);
-    if (oldestChatTimestamp) {
-      console.log(`  Oldest chat timestamp found: ${oldestChatTimestamp}`);
+      // === STEP 1c: Find oldest visible chat timestamp to limit Git commit scrolling ===
+      var oldestChatTimestamp = await this.findOldestChatTimestamp(page);
+      if (oldestChatTimestamp) {
+        console.log(`  Oldest chat timestamp found: ${oldestChatTimestamp}`);
+      } else {
+        console.log('  Could not determine oldest chat timestamp — will load all Git commits');
+      }
+
+      // === STEP 2: Navigate to Git tab, click one relative timestamp, scrape commits ===
+      // The one-click timestamp conversion in the Git tab converts ALL relative timestamps
+      // across the entire UI to absolute. This is critical for accurate timestamp extraction.
+      try {
+        gitCommits = await this.scrapeGitCommits(page, oldestChatTimestamp);
+      } catch (err) {
+        console.log('  WARNING: Could not scrape Git commits:', (err as Error).message);
+        console.log('  Timestamps may remain relative. Extraction will continue but some timestamps may be missing.');
+      }
+
+      // === STEP 3: Navigate back to chat panel ===
+      console.log('\nStep 3: Navigating back to chat panel...');
+      await this.navigateToChatPanel(page, fullUrl);
+      await page.waitForTimeout(2000);
+
+      // === STEP 4: Hover over duration elements for precise times ===
+      console.log('Step 4: Hovering over duration elements to capture precise tooltips...');
+      var hoverCount = await this.hoverDurationElements(page, this.verbose);
+      if (hoverCount > 0) {
+        console.log(`  Captured ${hoverCount} precise duration tooltips via hover`);
+      }
+
+      // === STEP 5: Extract all chat data (timestamps should now be absolute) ===
+      console.log('Step 5: Extracting all chat data...');
+      const extracted = await this.extractAllData(page, outputDir);
+      messages = extracted.messages;
+      checkpoints = extracted.checkpoints;
+      workEntries = extracted.workEntries;
+
+      for (const cp of checkpoints) {
+        cp.durationSeconds = calculateDuration(cp.timestamp, messages);
+      }
     } else {
-      console.log('  Could not determine oldest chat timestamp — will load all Git commits');
+      // Standard mode: extract only user/agent messages with timestamps
+      console.log('Step 2: Extracting chat messages...');
+      const extracted = await this.extractAllData(page, outputDir);
+      messages = extracted.messages;
     }
 
-    // === STEP 2: Navigate to Git tab, click one relative timestamp, scrape commits ===
-    // The one-click timestamp conversion in the Git tab converts ALL relative timestamps
-    // across the entire UI to absolute. This is critical for accurate timestamp extraction.
-    try {
-      gitCommits = await this.scrapeGitCommits(page, oldestChatTimestamp);
-    } catch (err) {
-      console.log('  WARNING: Could not scrape Git commits:', (err as Error).message);
-      console.log('  Timestamps may remain relative. Extraction will continue but some timestamps may be missing.');
-    }
-
-    // === STEP 3: Navigate back to chat panel ===
-    console.log('\nStep 3: Navigating back to chat panel...');
-    await this.navigateToChatPanel(page, fullUrl);
-    await page.waitForTimeout(2000);
-
-    // === STEP 4: Hover over duration elements for precise times ===
-    console.log('Step 4: Hovering over duration elements to capture precise tooltips...');
-    var hoverCount = await this.hoverDurationElements(page, this.verbose);
-    if (hoverCount > 0) {
-      console.log(`  Captured ${hoverCount} precise duration tooltips via hover`);
-    }
-
-    // === STEP 5: Extract all chat data (timestamps should now be absolute) ===
-    console.log('Step 5: Extracting all chat data...');
-    const extracted = await this.extractAllData(page, outputDir);
-    messages = extracted.messages;
-    checkpoints = extracted.checkpoints;
-    workEntries = extracted.workEntries;
-
-    for (const cp of checkpoints) {
-      cp.durationSeconds = calculateDuration(cp.timestamp, messages);
-    }
-
-    // Save DOM debug info
-    try {
-      const domDebug = await page.evaluate(function() {
-        var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
-        var info = [];
-        for (var i = 0; i < containers.length && i < 20; i++) {
-          var c = containers[i];
-          var children = [];
-          for (var j = 0; j < c.children.length && j < 10; j++) {
-            var ch = c.children[j];
-            children.push({
-              tag: ch.tagName,
-              className: (ch.getAttribute('class') || '').substring(0, 120),
-              dataTestId: ch.getAttribute('data-testid') || '',
-              dataCy: ch.getAttribute('data-cy') || '',
-              dataEventType: ch.getAttribute('data-event-type') || '',
-              role: ch.getAttribute('role') || '',
-              childCount: ch.children.length,
-              textLength: (ch.textContent || '').length,
-              textPreview: (ch.textContent || '').substring(0, 80),
-              outerHTMLPreview: ch.outerHTML.substring(0, 300)
+    if (fullMode) {
+      // Save DOM debug info
+      try {
+        const domDebug = await page.evaluate(function() {
+          var containers = document.querySelectorAll('[class*="eventContainer"], [class*="EventContainer"], [data-event-type]');
+          var info = [];
+          for (var i = 0; i < containers.length && i < 20; i++) {
+            var c = containers[i];
+            var children = [];
+            for (var j = 0; j < c.children.length && j < 10; j++) {
+              var ch = c.children[j];
+              children.push({
+                tag: ch.tagName,
+                className: (ch.getAttribute('class') || '').substring(0, 120),
+                dataTestId: ch.getAttribute('data-testid') || '',
+                dataCy: ch.getAttribute('data-cy') || '',
+                dataEventType: ch.getAttribute('data-event-type') || '',
+                role: ch.getAttribute('role') || '',
+                childCount: ch.children.length,
+                textLength: (ch.textContent || '').length,
+                textPreview: (ch.textContent || '').substring(0, 80),
+                outerHTMLPreview: ch.outerHTML.substring(0, 300)
+              });
+            }
+            info.push({
+              tag: c.tagName,
+              className: (c.getAttribute('class') || '').substring(0, 120),
+              dataTestId: c.getAttribute('data-testid') || '',
+              role: c.getAttribute('role') || '',
+              childCount: c.children.length,
+              scrollHeight: c.scrollHeight,
+              clientHeight: c.clientHeight,
+              childSamples: children
             });
           }
-          info.push({
-            tag: c.tagName,
-            className: (c.getAttribute('class') || '').substring(0, 120),
-            dataTestId: c.getAttribute('data-testid') || '',
-            role: c.getAttribute('role') || '',
-            childCount: c.children.length,
-            scrollHeight: c.scrollHeight,
-            clientHeight: c.clientHeight,
-            childSamples: children
-          });
-        }
-        return { containers: info, totalContainers: containers.length };
-      });
-      const debugPath = path.join(outputDir, 'dom-debug.json');
-      fs.writeFileSync(debugPath, JSON.stringify(domDebug, null, 2));
-      console.log(`  DOM debug saved: ${debugPath}`);
-    } catch (err) {
-      console.log('  Note: Could not save DOM debug info');
+          return { containers: info, totalContainers: containers.length };
+        });
+        const debugPath = path.join(outputDir, 'dom-debug.json');
+        fs.writeFileSync(debugPath, JSON.stringify(domDebug, null, 2));
+        console.log(`  DOM debug saved: ${debugPath}`);
+      } catch (err) {
+        console.log('  Note: Could not save DOM debug info');
+      }
     }
 
     try {
@@ -442,15 +451,22 @@ export class ReplitScraper {
 
     console.log(`\n  Results summary:`);
     console.log(`    Messages: ${messages.length} (${messages.filter(m => m.type === 'user').length} user, ${messages.filter(m => m.type === 'agent').length} agent)`);
-    console.log(`    Checkpoints: ${checkpoints.length}`);
-    console.log(`    Work entries: ${workEntries.length}`);
-    console.log(`    Git commits: ${gitCommits.length}`);
-    const withTimestamp = [...messages, ...workEntries, ...checkpoints].filter((e: any) => e.timestamp).length;
-    const total = messages.length + workEntries.length + checkpoints.length;
-    if (withTimestamp < total) {
-      console.log(`    Items with timestamps: ${withTimestamp}/${total} (${total - withTimestamp} item(s) at start of conversation may lack timestamps)`);
+    if (fullMode) {
+      console.log(`    Checkpoints: ${checkpoints.length}`);
+      console.log(`    Work entries: ${workEntries.length}`);
+      console.log(`    Git commits: ${gitCommits.length}`);
+      const withTimestamp = [...messages, ...workEntries, ...checkpoints].filter((e: any) => e.timestamp).length;
+      const total = messages.length + workEntries.length + checkpoints.length;
+      if (withTimestamp < total) {
+        console.log(`    Items with timestamps: ${withTimestamp}/${total} (${total - withTimestamp} item(s) at start of conversation may lack timestamps)`);
+      } else {
+        console.log(`    Items with timestamps: ${withTimestamp}/${total} (all items have timestamps)`);
+      }
     } else {
-      console.log(`    Items with timestamps: ${withTimestamp}/${total} (all items have timestamps)`);
+      const withTimestamp = messages.filter((m: any) => m.timestamp).length;
+      if (withTimestamp < messages.length) {
+        console.log(`    Messages with timestamps: ${withTimestamp}/${messages.length}`);
+      }
     }
     console.log(`    Extraction time: ${elapsedStr}`);
 
@@ -844,10 +860,6 @@ export class ReplitScraper {
     });
 
     if (strategy1.clicked) {
-      console.log('  Strategy 1 (text/aria match): clicked Git element');
-      if (strategy1.debugInfo.length > 0) {
-        console.log('    Matched:', JSON.stringify(strategy1.debugInfo[0]));
-      }
       await page.waitForTimeout(3000);
     }
 
@@ -856,7 +868,7 @@ export class ReplitScraper {
 
     // Strategy 2: Look for SVG icons that look like git branch icons
     if (!gitPanelOpen) {
-      console.log('  Strategy 1 did not open Git panel. Trying Strategy 2 (SVG icon detection)...');
+      
       var strategy2 = await page.evaluate(function() {
         var clicked = false;
         var debugInfo = [];
@@ -901,10 +913,6 @@ export class ReplitScraper {
       });
 
       if (strategy2.clicked) {
-        console.log('  Strategy 2 (SVG icon): clicked Git-related icon');
-        if (strategy2.debugInfo.length > 0) {
-          console.log('    Matched:', JSON.stringify(strategy2.debugInfo[0]));
-        }
         await page.waitForTimeout(3000);
         gitPanelOpen = await this.verifyGitPanelOpen(page);
       }
@@ -912,7 +920,7 @@ export class ReplitScraper {
 
     // Strategy 3: Look for any element whose tooltip or nearby text references git
     if (!gitPanelOpen) {
-      console.log('  Strategy 2 did not open Git panel. Trying Strategy 3 (broader scan)...');
+      
       var strategy3 = await page.evaluate(function() {
         var clicked = false;
         var debugInfo = [];
@@ -944,10 +952,6 @@ export class ReplitScraper {
       });
 
       if (strategy3.clicked) {
-        console.log('  Strategy 3 (attr scan): clicked Git-related element');
-        if (strategy3.debugInfo.length > 0) {
-          console.log('    Matched:', JSON.stringify(strategy3.debugInfo[0]));
-        }
         await page.waitForTimeout(3000);
         gitPanelOpen = await this.verifyGitPanelOpen(page);
       }
@@ -1021,7 +1025,8 @@ export class ReplitScraper {
 
     // Scroll to load commits (limited by oldest chat timestamp if available)
     var scrollAttempts = 0;
-    var maxScrollAttempts = 30;
+    var maxScrollAttempts = 2;
+    var maxCommitCap = 100;
     var lastCommitCount = 0;
     var stableRounds = 0;
     var cutoffDate = oldestChatTimestamp ? new Date(oldestChatTimestamp) : null;
@@ -1070,6 +1075,12 @@ export class ReplitScraper {
         }
         return count;
       });
+
+      if (currentCount >= maxCommitCap) {
+        console.log(`  Reached commit cap (${maxCommitCap}) — stopping scroll`);
+        lastCommitCount = currentCount;
+        break;
+      }
 
       if (currentCount === lastCommitCount) {
         stableRounds++;
@@ -2484,7 +2495,7 @@ export class ReplitScraper {
         }
       });
 
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(300);
 
       const clickedLoadMore = await this.clickLoadMoreButton(page);
       if (clickedLoadMore) {

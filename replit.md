@@ -4,6 +4,10 @@
 
 The Replit Agent Exporter is a Node.js CLI tool designed to backup and export Replit Agent chat history and checkpoint metadata. It allows users to extract and preserve their Replit Agent conversations, including detailed work data, usage charge breakdowns, and duration calculations for each work entry. This tool provides a comprehensive solution for backing up and analyzing interactions with the Replit Agent, offering insights into project progression and agent resource consumption.
 
+**Two Modes:**
+- **Standard mode** (default): Extracts only user and agent chat messages with timestamps. Outputs JSON, chat CSV, and chat Markdown.
+- **Full mode** (`--full` flag): Performs complete extraction including git commits, work tracking, checkpoints, hover durations, and all CSV/JSON outputs (all-events, work-tracking, work-summary, combined work-summary).
+
 ## User Preferences
 
 I want iterative development.
