@@ -1,6 +1,6 @@
-# Replit Agent Exporter
+# Replit Agent History/Chat/Usage Exporter
 
-A Node.js CLI tool that backs up and exports your Replit Agent chat history, checkpoint metadata, and Git commit information. It uses browser automation to scrape data directly from the Replit web interface, preserving the full structure of your conversations including work entries, usage charges, duration calculations, and agent activity timelines.
+A Node.js CLI tool that exports your Replit Agent chat history, checkpoint metadata, and Git commit information. It uses browser automation to scrape data directly from the Replit web interface, preserving the full structure of your conversations including work entries, usage charges, duration calculations, and agent activity timelines.
 
 ## Features
 
